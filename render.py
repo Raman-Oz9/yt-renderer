@@ -21,7 +21,9 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 VOICES = ["en-US-EmmaMultilingualNeural", "en-US-AriaNeural"]  # 2nd is fallback
 MAX_SECONDS = 59      # keep it a Short
 SEGMENT_SECONDS = 8   # max length taken from each stock clip
-W, H, FPS = 1080, 1920, 30
+W, H, FPS = 720, 1280, 30
+TARGET_MB = 4.2       # Make's free plan can only download files up to 5 MB
+AUDIO_KBPS = 64
 
 WORK = Path("work")
 OUT = Path("output")
@@ -111,7 +113,7 @@ def build_segments(needed_seconds):
             "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-t", SEGMENT_SECONDS,
             "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
                     f"crop={W}:{H},fps={FPS},setsar=1"),
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
             "-pix_fmt", "yuv420p", seg,
         ])
         segments.append(seg)
@@ -137,15 +139,23 @@ def main():
          "-i", concat_list, "-c", "copy", joined])
 
     # Loop the visuals if they are shorter than the voice, then mux.
+    # Pick a video bitrate so the final file stays under TARGET_MB.
+    total = length + 0.4
+    video_kbps = int(TARGET_MB * 8 * 1024 / total) - AUDIO_KBPS
+    video_kbps = max(250, min(video_kbps, 1500))
     run([
         "ffmpeg", "-y", "-loglevel", "error",
         "-stream_loop", "-1", "-i", joined, "-i", voice,
-        "-t", f"{length + 0.4:.2f}",
+        "-t", f"{total:.2f}",
         "-map", "0:v", "-map", "1:a",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
+        "-bufsize", f"{video_kbps * 2}k", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "1",
         "-movflags", "+faststart", OUT / "video.mp4",
     ])
-    print("Done:", OUT / "video.mp4")
+    size_mb = (OUT / "video.mp4").stat().st_size / 1024 / 1024
+    print(f"Done: {OUT / 'video.mp4'} ({size_mb:.1f} MB)")
 
 
 if __name__ == "__main__":
