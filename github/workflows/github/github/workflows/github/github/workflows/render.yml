@@ -1,0 +1,74 @@
+name: Render video
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: Narration script
+        required: true
+        type: string
+      search_query:
+        description: Pexels search query
+        required: true
+        type: string
+      title:
+        description: YouTube title
+        required: true
+        type: string
+      description:
+        description: YouTube description
+        required: true
+        type: string
+      tags:
+        description: Comma-separated tags
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install edge-tts requests
+
+      - name: Render video
+        env:
+          SCRIPT: ${{ inputs.script }}
+          SEARCH_QUERY: ${{ inputs.search_query }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: python render.py
+
+      - name: Publish release and notify Make
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ inputs.title }}
+          DESCRIPTION: ${{ inputs.description }}
+          TAGS: ${{ inputs.tags }}
+          MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
+        run: |
+          TAG="video-${GITHUB_RUN_ID}"
+          gh release create "$TAG" output/video.mp4 --title "video ${GITHUB_RUN_ID}" --notes "Auto-generated"
+          ASSET_URL=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets[0].browser_download_url')
+          jq -n \
+            --arg title "$TITLE" \
+            --arg description "$DESCRIPTION" \
+            --arg tags "$TAGS" \
+            --arg video_url "$ASSET_URL" \
+            '{title:$title, description:$description, tags:$tags, video_url:$video_url}' \
+            | curl -fsS -X POST -H "Content-Type: application/json" --data @- "$MAKE_WEBHOOK_URL"
+          # keep only the 20 newest releases
+          gh release list --limit 200 --json tagName --jq '.[20:][].tagName' \
+            | xargs -r -I{} gh release delete {} --cleanup-tag -y
