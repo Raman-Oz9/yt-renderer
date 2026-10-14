@@ -45,7 +45,7 @@ VIDEO_MAXRATE_KBPS = 6000
 AUDIO_KBPS = 128
 CAPTION_FONT_SIZE = 54
 CAPTION_MARGIN_V = 430   # distance from the bottom edge
-MUSIC_DIR = Path("music")
+MUSIC_DIR = Path(".")    # music tracks live in the repo root alongside this script
 MUSIC_VOLUME = 0.10      # kept low so narration always stays clearly on top
 
 WORK = Path("work")
