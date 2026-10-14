@@ -2,9 +2,17 @@
 """Faceless Short renderer.
 
 Natural voice (Gemini TTS, falls back to edge-tts) + word-highlight captions
-+ Pexels stock clips + FFmpeg. Writes output/video.mp4 (720x1280, ~4 MB).
++ per-beat Pexels stock clips + optional background music + FFmpeg.
+Writes output/video.mp4 (1080x1920).
 
-Environment: SCRIPT, SEARCH_QUERY, PEXELS_API_KEY, GEMINI_API_KEY (optional).
+Environment:
+  SCRIPT          narration script (required)
+  SEARCH_QUERY    one or more stock-video search phrases, "|"-separated,
+                   one per scene beat, in the order they should appear
+                   (required)
+  PEXELS_API_KEY  required
+  GEMINI_API_KEY  optional - used for TTS voice and falls back to edge-tts
+  GEMINI_VOICE    optional - defaults to "Charon" (calm male voice)
 """
 import asyncio
 import base64
@@ -20,21 +28,25 @@ from pathlib import Path
 import requests
 
 SCRIPT = os.environ["SCRIPT"].strip()
-QUERY = os.environ.get("SEARCH_QUERY", "").strip() or "nature"
+QUERIES = [q.strip() for q in os.environ.get("SEARCH_QUERY", "").split("|") if q.strip()] or ["nature"]
 PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Kore")  # try Puck, Charon, Fenrir, Aoede
-EDGE_VOICES = ["en-US-AndrewMultilingualNeural", "en-US-AriaNeural"]  # fallback
+GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Charon")  # calm, informative male voice
+EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
 
-MAX_SECONDS = 59      # keep it a Short
-SEGMENT_SECONDS = 8   # max length taken from each stock clip
-W, H, FPS = 720, 1280, 30
-TARGET_MB = 4.2       # Make's free plan can only download files up to 5 MB
-AUDIO_KBPS = 64
+MAX_SECONDS = 170       # extended Shorts allow up to 3 min; stay comfortably under that
+SEGMENT_SECONDS = 8      # max length taken from each stock clip
+MAX_SEGMENTS = 30        # safety cap on number of clips stitched together
+W, H, FPS = 1080, 1920, 30
+VIDEO_CRF = 22
+VIDEO_MAXRATE_KBPS = 6000
+AUDIO_KBPS = 128
 CAPTION_FONT_SIZE = 54
-CAPTION_MARGIN_V = 430  # distance from the bottom edge
+CAPTION_MARGIN_V = 430   # distance from the bottom edge
+MUSIC_DIR = Path("music")
+MUSIC_VOLUME = 0.10      # kept low so narration always stays clearly on top
 
 WORK = Path("work")
 OUT = Path("output")
@@ -61,8 +73,8 @@ def gemini_tts(dest):
     """Natural-sounding voice from Gemini TTS. Saves a 24 kHz mono WAV."""
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_TTS_MODEL}:generateContent")
-    prompt = ("Say in a warm, expressive, conversational storyteller voice, "
-              f"at a slightly fast pace with natural pauses: {SCRIPT}")
+    prompt = ("Say in a confident, warm storyteller voice, at a natural "
+              f"pace with clear pauses between ideas: {SCRIPT}")
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -133,7 +145,7 @@ def make_voice():
         try:
             raw = WORK / "voice_raw.wav"
             gemini_tts(raw)
-            print("Voice OK: Gemini TTS")
+            print(f"Voice OK: Gemini TTS ({GEMINI_VOICE})")
             return trim_silence(raw, WORK / "voice.wav"), None
         except Exception as exc:
             print(f"Gemini TTS unavailable, falling back to edge-tts: {exc}")
@@ -147,7 +159,7 @@ def make_voice():
 # ------------------------------------------------------------- captions ----
 
 def clean_word(word):
-    return re.sub(r"[{}\\\"\u201c\u201d.,;:\u2026]", "", word).strip().upper()
+    return re.sub(r"[{}\\\"“”.,;:…]", "", word).strip().upper()
 
 
 def estimate_words(text, duration):
@@ -156,9 +168,9 @@ def estimate_words(text, duration):
     weights = []
     for t in tokens:
         w = len(clean_word(t)) + 1.5
-        if re.search(r"[.!?\u2026]$", t):
+        if re.search(r"[.!?…]$", t):
             w += 4
-        elif re.search(r"[,;:\u2014-]$", t):
+        elif re.search(r"[,;:—-]$", t):
             w += 2
         weights.append(w)
     total = sum(weights)
@@ -264,58 +276,129 @@ def download(url, dest):
                 fh.write(chunk)
 
 
-def build_segments(needed_seconds):
-    videos = search_pexels(QUERY)
-    if not videos:
-        print(f"No results for '{QUERY}', falling back to 'nature'")
-        videos = search_pexels("nature")
-    if not videos:
-        sys.exit("Pexels returned no clips")
-    random.shuffle(videos)
+def prep_clip(video, idx):
+    """Download one Pexels video and crop/encode it into a usable segment."""
+    link = best_file(video)
+    if not link:
+        return None, 0.0
+    raw = WORK / f"raw_{idx}.mp4"
+    seg = WORK / f"seg_{idx}.mp4"
+    try:
+        download(link, raw)
+    except Exception as exc:
+        print(f"Download failed for clip {idx}: {exc}")
+        return None, 0.0
+    run([
+        "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-t", SEGMENT_SECONDS,
+        "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{H},fps={FPS},setsar=1"),
+        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "-pix_fmt", "yuv420p", seg,
+    ])
+    dur = min(float(video.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
+    return seg, dur
 
-    segments, total = [], 0.0
-    for i, video in enumerate(videos):
-        if total >= needed_seconds + 1 or len(segments) >= 8:
+
+def build_segments(needed_seconds):
+    """Fetch clips query-by-query so the footage roughly follows the script's
+    own sequence of scene beats, instead of one generic look for the whole
+    video."""
+    segments, total, idx = [], 0.0, 0
+    per_query_target = max(SEGMENT_SECONDS, needed_seconds / len(QUERIES))
+
+    for query in QUERIES:
+        if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
             break
-        link = best_file(video)
-        if not link:
+        videos = search_pexels(query)
+        if not videos:
+            print(f"No results for '{query}', skipping that beat")
             continue
-        raw = WORK / f"raw_{i}.mp4"
-        seg = WORK / f"seg_{i}.mp4"
-        try:
-            download(link, raw)
-        except Exception as exc:
-            print(f"Download failed for clip {i}: {exc}")
-            continue
-        run([
-            "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-t", SEGMENT_SECONDS,
-            "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                    f"crop={W}:{H},fps={FPS},setsar=1"),
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-            "-pix_fmt", "yuv420p", seg,
-        ])
-        segments.append(seg)
-        total += min(float(video.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
+        random.shuffle(videos)
+        used_for_query = 0.0
+        for video in videos:
+            if (used_for_query >= per_query_target
+                    or total >= needed_seconds + 1
+                    or len(segments) >= MAX_SEGMENTS):
+                break
+            seg, dur = prep_clip(video, idx)
+            if not seg:
+                continue
+            segments.append(seg)
+            total += dur
+            used_for_query += dur
+            idx += 1
+
+    if not segments:
+        print("Per-beat search found nothing usable, falling back to 'nature'")
+        videos = search_pexels("nature")
+        random.shuffle(videos)
+        for video in videos:
+            if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
+                break
+            seg, dur = prep_clip(video, idx)
+            if not seg:
+                continue
+            segments.append(seg)
+            total += dur
+            idx += 1
 
     if not segments:
         sys.exit("Could not prepare any video segments")
     return segments
 
 
-def final_encode(joined, voice, total, video_kbps, ass_path):
+def pick_music():
+    if not MUSIC_DIR.exists():
+        return None
+    tracks = [p for p in MUSIC_DIR.iterdir()
+              if p.suffix.lower() in (".mp3", ".wav", ".m4a", ".ogg")]
+    return random.choice(tracks) if tracks else None
+
+
+def mix_audio(voice, total):
+    """Lays soft background music under the narration, ducked low with a
+    fade in/out. Returns the voice path unchanged if no music is available
+    yet, so the pipeline keeps working while the music/ folder is empty."""
+    track = pick_music()
+    if not track:
+        print("No files in music/ yet - rendering with voice only")
+        return voice
+    mixed = WORK / "mixed.wav"
+    fade_out_start = max(0.0, total - 1.5)
+    filt = (
+        f"[1:a]aloop=loop=-1:size=2e9,atrim=0:{total:.2f},"
+        f"volume={MUSIC_VOLUME},afade=t=in:st=0:d=1.5,"
+        f"afade=t=out:st={fade_out_start:.2f}:d=1.5[music];"
+        f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=0:weights=1 0.6[aout]"
+    )
+    try:
+        run([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", voice, "-i", track,
+            "-filter_complex", filt, "-map", "[aout]",
+            "-t", f"{total:.2f}", mixed,
+        ])
+        print(f"Background music mixed in: {track.name}")
+        return mixed
+    except subprocess.CalledProcessError as exc:
+        print(f"Music mixing failed, continuing with voice only: {exc}")
+        return voice
+
+
+def final_encode(joined, audio, total, ass_path):
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-stream_loop", "-1", "-i", joined, "-i", voice,
+        "-stream_loop", "-1", "-i", joined, "-i", audio,
         "-t", f"{total:.2f}",
         "-map", "0:v", "-map", "1:a",
     ]
     if ass_path:
         cmd += ["-vf", f"ass={ass_path}"]
     cmd += [
-        "-c:v", "libx264", "-preset", "veryfast",
-        "-b:v", f"{video_kbps}k", "-maxrate", f"{video_kbps}k",
-        "-bufsize", f"{video_kbps * 2}k", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "1",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(VIDEO_CRF),
+        "-maxrate", f"{VIDEO_MAXRATE_KBPS}k", "-bufsize", f"{VIDEO_MAXRATE_KBPS * 2}k",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "2",
         "-movflags", "+faststart", OUT / "video.mp4",
     ]
     run(cmd)
@@ -344,18 +427,16 @@ def main():
     run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
          "-i", concat_list, "-c", "copy", joined])
 
-    # Loop the visuals if shorter than the voice, burn captions, and pick a
-    # video bitrate that keeps the file under TARGET_MB.
     total = length + 0.4
-    video_kbps = int(TARGET_MB * 8 * 1024 / total) - AUDIO_KBPS
-    video_kbps = max(250, min(video_kbps, 1500))
+    audio = mix_audio(voice, total)
+
     try:
-        final_encode(joined, voice, total, video_kbps, ass_path)
+        final_encode(joined, audio, total, ass_path)
     except subprocess.CalledProcessError:
         if not ass_path:
             raise
         print("Caption burn-in failed, rendering without captions")
-        final_encode(joined, voice, total, video_kbps, None)
+        final_encode(joined, audio, total, None)
 
     size_mb = (OUT / "video.mp4").stat().st_size / 1024 / 1024
     print(f"Done: {OUT / 'video.mp4'} ({size_mb:.1f} MB)")
