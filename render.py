@@ -46,7 +46,8 @@ AUDIO_KBPS = 128
 CAPTION_FONT_SIZE = 54
 CAPTION_MARGIN_V = 430   # distance from the bottom edge
 MUSIC_DIR = Path(".")    # music tracks live in the repo root alongside this script
-MUSIC_VOLUME = 0.10      # kept low so narration always stays clearly on top
+MUSIC_VOLUME = 0.20      # raised from 0.10 - still under the voice, but more audible
+MUSIC_START_OFFSET = 20  # skip the first 20s of the track (skip past quiet intros)
 
 WORK = Path("work")
 OUT = Path("output")
@@ -374,7 +375,7 @@ def mix_audio(voice, total):
     try:
         run([
             "ffmpeg", "-y", "-loglevel", "error",
-            "-i", voice, "-i", track,
+            "-i", voice, "-ss", str(MUSIC_START_OFFSET), "-i", track,
             "-filter_complex", filt, "-map", "[aout]",
             "-t", f"{total:.2f}", mixed,
         ])
