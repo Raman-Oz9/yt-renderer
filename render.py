@@ -33,8 +33,9 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Orus")  # deep, firm male narrator voice
+GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Algenib")  # deep, gravelly male narrator voice
 EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
+PITCH_FACTOR = 0.92      # <1 lowers pitch further on top of the voice itself, duration preserved
 
 MAX_SECONDS = 170       # extended Shorts allow up to 3 min; stay comfortably under that
 SEGMENT_SECONDS = 8      # max length taken from each stock clip
@@ -46,7 +47,7 @@ AUDIO_KBPS = 128
 CAPTION_FONT_SIZE = 54
 CAPTION_MARGIN_V = 430   # distance from the bottom edge
 MUSIC_DIR = Path(".")    # music tracks live in the repo root alongside this script
-MUSIC_VOLUME = 0.20      # raised from 0.10 - still under the voice, but more audible
+MUSIC_VOLUME = 0.30      # raised again from 0.20 - more audible under the voice
 MUSIC_START_OFFSET = 20  # skip the first 20s of the track (skip past quiet intros)
 
 WORK = Path("work")
@@ -139,6 +140,24 @@ def trim_silence(src, dest):
         dest,
     ])
     return dest if audio_duration(dest) > 1.0 else src
+
+
+def deepen_voice(src, dest, factor=PITCH_FACTOR):
+    """Lowers the voice pitch slightly for a deeper tone, compensating speed
+    back so the duration (and caption timings) stay the same."""
+    try:
+        sr = int(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate", "-of", "default=nw=1:nk=1", str(src),
+        ]).strip())
+    except Exception:
+        sr = 24000
+    run([
+        "ffmpeg", "-y", "-loglevel", "error", "-i", src,
+        "-filter:a", f"asetrate={int(sr * factor)},aresample={sr},atempo={1 / factor:.4f}",
+        dest,
+    ])
+    return dest
 
 
 def make_voice():
@@ -408,6 +427,11 @@ def final_encode(joined, audio, total, ass_path):
 
 def main():
     voice, words = make_voice()
+    try:
+        voice = deepen_voice(voice, WORK / "voice_deep.wav")
+        print(f"Voice pitch lowered (factor {PITCH_FACTOR})")
+    except subprocess.CalledProcessError as exc:
+        print(f"Pitch-lowering failed, using voice as-is: {exc}")
     length = min(audio_duration(voice), MAX_SECONDS)
     print(f"Narration length: {length:.1f}s")
 
