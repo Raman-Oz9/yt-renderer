@@ -33,7 +33,7 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Charon")  # calm, informative male voice
+GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Orus")  # deep, firm male narrator voice
 EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
 
 MAX_SECONDS = 170       # extended Shorts allow up to 3 min; stay comfortably under that
@@ -74,8 +74,9 @@ def gemini_tts(dest):
     """Natural-sounding voice from Gemini TTS. Saves a 24 kHz mono WAV."""
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_TTS_MODEL}:generateContent")
-    prompt = ("Say in a confident, warm storyteller voice, at a natural "
-              f"pace with clear pauses between ideas: {SCRIPT}")
+    prompt = ("Say in a deep, strong, masculine documentary-narrator voice, "
+              "confident and authoritative, at a natural pace with clear "
+              f"pauses between ideas: {SCRIPT}")
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
