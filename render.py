@@ -33,7 +33,7 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Algenib")  # deep, gravelly male narrator voice
+GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Orus")  # deep, firm male narrator voice
 EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
 PITCH_FACTOR = 0.92      # <1 lowers pitch further on top of the voice itself, duration preserved
 
