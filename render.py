@@ -268,25 +268,25 @@ def build_ass(words, path):
 # ---------------------------------------------------------------- video ----
 
 def search_pexels(query):
-    # Pull from a random page deeper into Pexels' results each time, instead
-    # of always the same top-20 for a given query - otherwise two videos
-    # that reuse a similar search phrase (common for science/history/space
-    # topics) draw from the exact same small pool and end up sharing clips.
-    page = random.randint(1, 6)
+    # Pull a wider pool of relevance-ranked results (40 instead of 20) and
+    # only vary between the first two pages, so repeated or similar search
+    # phrases across different videos don't always draw from the exact same
+    # tiny top-20 - without diving so deep into Pexels' ranking that the
+    # results stop actually matching the query (that's what pages 3+ did).
+    page = random.randint(1, 2)
     resp = requests.get(
         "https://api.pexels.com/videos/search",
         headers={"Authorization": PEXELS_KEY},
-        params={"query": query, "per_page": 20, "page": page, "orientation": "portrait"},
+        params={"query": query, "per_page": 40, "page": page, "orientation": "portrait"},
         timeout=30,
     )
     resp.raise_for_status()
     videos = resp.json().get("videos", [])
     if not videos and page > 1:
-        # that page may simply not exist for a narrow query - fall back to page 1
         resp = requests.get(
             "https://api.pexels.com/videos/search",
             headers={"Authorization": PEXELS_KEY},
-            params={"query": query, "per_page": 20, "page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 40, "page": 1, "orientation": "portrait"},
             timeout=30,
         )
         resp.raise_for_status()
