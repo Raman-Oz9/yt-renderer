@@ -268,14 +268,30 @@ def build_ass(words, path):
 # ---------------------------------------------------------------- video ----
 
 def search_pexels(query):
+    # Pull from a random page deeper into Pexels' results each time, instead
+    # of always the same top-20 for a given query - otherwise two videos
+    # that reuse a similar search phrase (common for science/history/space
+    # topics) draw from the exact same small pool and end up sharing clips.
+    page = random.randint(1, 6)
     resp = requests.get(
         "https://api.pexels.com/videos/search",
         headers={"Authorization": PEXELS_KEY},
-        params={"query": query, "per_page": 20, "orientation": "portrait"},
+        params={"query": query, "per_page": 20, "page": page, "orientation": "portrait"},
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json().get("videos", [])
+    videos = resp.json().get("videos", [])
+    if not videos and page > 1:
+        # that page may simply not exist for a narrow query - fall back to page 1
+        resp = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers={"Authorization": PEXELS_KEY},
+            params={"query": query, "per_page": 20, "page": 1, "orientation": "portrait"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        videos = resp.json().get("videos", [])
+    return videos
 
 
 def best_file(video):
