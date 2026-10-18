@@ -30,6 +30,7 @@ import requests
 SCRIPT = os.environ["SCRIPT"].strip()
 QUERIES = [q.strip() for q in os.environ.get("SEARCH_QUERY", "").split("|") if q.strip()] or ["nature"]
 PEXELS_KEY = os.environ["PEXELS_API_KEY"]
+PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
@@ -291,18 +292,109 @@ def search_pexels(query):
         )
         resp.raise_for_status()
         videos = resp.json().get("videos", [])
-    return videos
+
+    clips = []
+    for video in videos:
+        files = [
+            f for f in video.get("video_files", [])
+            if f.get("file_type") == "video/mp4"
+            and f.get("height", 0) >= f.get("width", 0)
+        ]
+        if not files:
+            continue
+        files.sort(key=lambda f: abs(f["height"] - H))
+        # Pexels doesn't expose tags via the API, but the video's page URL is
+        # a descriptive slug (e.g. ".../video/aerial-view-city-traffic-123/")
+        # that's a real signal of what's actually in the clip - use it to
+        # judge relevance against the search query.
+        clips.append({
+            "source": "pexels",
+            "link": files[0]["link"],
+            "duration": video.get("duration", SEGMENT_SECONDS),
+            "keywords": extract_keywords(video.get("url", "")),
+        })
+    return clips
 
 
-def best_file(video):
-    """Portrait mp4 closest to the target height."""
-    files = [
-        f for f in video.get("video_files", [])
-        if f.get("file_type") == "video/mp4"
-        and f.get("height", 0) >= f.get("width", 0)
-    ]
-    files.sort(key=lambda f: abs(f["height"] - H))
-    return files[0]["link"] if files else None
+def search_pixabay(query):
+    """Second, independent free stock-footage source - pairs with Pexels so
+    two videos searching a similar phrase draw from two separate catalogs
+    instead of fighting over the same pool."""
+    if not PIXABAY_KEY:
+        return []
+    page = random.randint(1, 2)
+    resp = requests.get(
+        "https://pixabay.com/api/videos/",
+        params={"key": PIXABAY_KEY, "q": query, "per_page": 40, "page": page, "safesearch": "true"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    hits = resp.json().get("hits", [])
+    if not hits and page > 1:
+        resp = requests.get(
+            "https://pixabay.com/api/videos/",
+            params={"key": PIXABAY_KEY, "q": query, "per_page": 40, "page": 1, "safesearch": "true"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        hits = resp.json().get("hits", [])
+
+    clips = []
+    for hit in hits:
+        files = [f for f in hit.get("videos", {}).values() if f.get("url")]
+        if not files:
+            continue
+        # Pixabay doesn't offer a portrait-only filter like Pexels does, but
+        # everything gets scaled+cropped to 1080x1920 in prep_clip anyway,
+        # so any orientation/quality works - just pick closest to target height.
+        files.sort(key=lambda f: abs(f.get("height", 0) - H))
+        # Pixabay gives real tags, unlike Pexels - the strongest relevance
+        # signal we have for this source.
+        clips.append({
+            "source": "pixabay",
+            "link": files[0]["url"],
+            "duration": hit.get("duration", SEGMENT_SECONDS),
+            "keywords": extract_keywords(hit.get("tags", "")),
+        })
+    return clips
+
+
+STOPWORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "to", "and", "or", "with",
+    "for", "is", "are", "its", "it's", "video", "footage", "stock",
+}
+
+
+def extract_keywords(text):
+    return {
+        w for w in re.findall(r"[a-z]+", text.lower())
+        if w not in STOPWORDS and len(w) > 2
+    }
+
+
+def search_clips(query):
+    """Combine both free stock-footage sources for one query, then rank by
+    how well each clip's own slug/tags actually overlap with the search
+    query - instead of just trusting the API's relevance ranking and
+    shuffling blindly, which is how unrelated clips were sneaking in.
+    Ties (and the near-ties just below the best score) still get shuffled
+    for variety, but a clip that shares none of the query's keywords only
+    gets used if nothing better came back at all."""
+    clips = search_pexels(query) + search_pixabay(query)
+    if not clips:
+        return []
+    query_words = extract_keywords(query)
+    scored = [(len(c["keywords"] & query_words), c) for c in clips]
+    best_score = max(s for s, _ in scored)
+    if best_score > 0:
+        chosen = [c for s, c in scored if s == best_score]
+        if len(chosen) < 6 and best_score > 1:
+            chosen += [c for s, c in scored if s == best_score - 1]
+    else:
+        print(f"No keyword-matching clips for '{query}' - using best-available pool")
+        chosen = [c for _, c in scored]
+    random.shuffle(chosen)
+    return chosen
 
 
 def download(url, dest):
@@ -313,9 +405,10 @@ def download(url, dest):
                 fh.write(chunk)
 
 
-def prep_clip(video, idx):
-    """Download one Pexels video and crop/encode it into a usable segment."""
-    link = best_file(video)
+def prep_clip(clip, idx):
+    """Download one stock clip (Pexels or Pixabay) and crop/encode it into a
+    usable segment."""
+    link = clip.get("link")
     if not link:
         return None, 0.0
     raw = WORK / f"raw_{idx}.mp4"
@@ -323,7 +416,7 @@ def prep_clip(video, idx):
     try:
         download(link, raw)
     except Exception as exc:
-        print(f"Download failed for clip {idx}: {exc}")
+        print(f"Download failed for clip {idx} ({clip.get('source')}): {exc}")
         return None, 0.0
     run([
         "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-t", SEGMENT_SECONDS,
@@ -332,7 +425,7 @@ def prep_clip(video, idx):
         "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
         "-pix_fmt", "yuv420p", seg,
     ])
-    dur = min(float(video.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
+    dur = min(float(clip.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
     return seg, dur
 
 
@@ -346,11 +439,10 @@ def build_segments(needed_seconds):
     for query in QUERIES:
         if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
             break
-        videos = search_pexels(query)
+        videos = search_clips(query)
         if not videos:
             print(f"No results for '{query}', skipping that beat")
             continue
-        random.shuffle(videos)
         used_for_query = 0.0
         for video in videos:
             if (used_for_query >= per_query_target
@@ -367,8 +459,7 @@ def build_segments(needed_seconds):
 
     if not segments:
         print("Per-beat search found nothing usable, falling back to 'nature'")
-        videos = search_pexels("nature")
-        random.shuffle(videos)
+        videos = search_clips("nature")
         for video in videos:
             if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
                 break
