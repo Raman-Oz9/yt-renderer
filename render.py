@@ -379,8 +379,14 @@ def search_clips(query):
     shuffling blindly, which is how unrelated clips were sneaking in.
     Ties (and the near-ties just below the best score) still get shuffled
     for variety, but a clip that shares none of the query's keywords only
-    gets used if nothing better came back at all."""
-    clips = search_pexels(query) + search_pixabay(query)
+    gets used if nothing better came back at all - and even then, we lean
+    on the API's own relevance order (its best guess for this query) rather
+    than shuffling across the whole wide pool, which is how an abstract
+    closing-line beat (no literal keyword match exists for it at all) used
+    to end up with a near-random clip from deep in the results."""
+    pexels = search_pexels(query)
+    pixabay = search_pixabay(query)
+    clips = pexels + pixabay
     if not clips:
         return []
     query_words = extract_keywords(query)
@@ -390,10 +396,17 @@ def search_clips(query):
         chosen = [c for s, c in scored if s == best_score]
         if len(chosen) < 6 and best_score > 1:
             chosen += [c for s, c in scored if s == best_score - 1]
+        random.shuffle(chosen)
     else:
-        print(f"No keyword-matching clips for '{query}' - using best-available pool")
-        chosen = [c for _, c in scored]
-    random.shuffle(chosen)
+        # No keyword overlap at all for this beat (common for an abstract
+        # "reveal"/closing line with no literal stock-footage equivalent).
+        # Stay close to each API's own top-ranked results instead of
+        # shuffling the full pool - only lightly shuffle within that
+        # top slice so it's not the exact same clip every run.
+        print(f"No keyword-matching clips for '{query}' - using each source's top results")
+        top_slice = pexels[:8] + pixabay[:8]
+        random.shuffle(top_slice)
+        chosen = top_slice
     return chosen
 
 
