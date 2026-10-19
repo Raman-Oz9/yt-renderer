@@ -445,9 +445,44 @@ def prep_clip(clip, idx):
 def build_segments(needed_seconds):
     """Fetch clips query-by-query so the footage roughly follows the script's
     own sequence of scene beats, instead of one generic look for the whole
-    video."""
+    video.
+
+    Critically, this also guarantees the final reel actually reaches
+    needed_seconds. Previously, if the per-beat searches came up short
+    (download failures, a thin result pool, etc.), the leftover gap got
+    filled by ffmpeg looping the whole short reel to match the audio length
+    - which is exactly why entire videos were visibly repeating their clips
+    end-to-end. Now we track every clip already used (by URL) so we never
+    download the same clip twice, and if we're still short after going
+    through every beat once, we keep pulling additional - still query-
+    relevant, still never-repeated - clips until we actually hit the
+    target length."""
     segments, total, idx = [], 0.0, 0
+    used_links = set()
     per_query_target = max(SEGMENT_SECONDS, needed_seconds / len(QUERIES))
+
+    def take_from(videos, budget):
+        nonlocal total, idx
+        used_here = 0.0
+        added_any = False
+        for video in videos:
+            if (used_here >= budget
+                    or total >= needed_seconds + 1
+                    or len(segments) >= MAX_SEGMENTS):
+                break
+            link = video.get("link")
+            if not link or link in used_links:
+                continue
+            seg, dur = prep_clip(video, idx)
+            if not seg:
+                continue
+            used_links.add(link)
+            segments.append(seg)
+            total += dur
+            used_here += dur
+            idx += 1
+            added_any = True
+        return added_any
 
     for query in QUERIES:
         if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
@@ -456,32 +491,45 @@ def build_segments(needed_seconds):
         if not videos:
             print(f"No results for '{query}', skipping that beat")
             continue
-        used_for_query = 0.0
-        for video in videos:
-            if (used_for_query >= per_query_target
-                    or total >= needed_seconds + 1
-                    or len(segments) >= MAX_SEGMENTS):
+        take_from(videos, per_query_target)
+
+    # Top-up pass: if the per-beat searches left us short of the narration
+    # length, cycle back through the same beats (now allowing a bigger
+    # budget per query) picking up any still-unused clips, instead of
+    # letting the final encode loop the short reel and visibly repeat it.
+    attempts = 0
+    while total < needed_seconds - 1 and len(segments) < MAX_SEGMENTS and attempts < 3:
+        attempts += 1
+        progressed = False
+        for query in QUERIES:
+            if total >= needed_seconds - 1 or len(segments) >= MAX_SEGMENTS:
                 break
-            seg, dur = prep_clip(video, idx)
-            if not seg:
+            videos = search_clips(query)
+            if not videos:
                 continue
-            segments.append(seg)
-            total += dur
-            used_for_query += dur
-            idx += 1
+            if take_from(videos, needed_seconds):
+                progressed = True
+        if not progressed:
+            break
 
     if not segments:
         print("Per-beat search found nothing usable, falling back to 'nature'")
         videos = search_clips("nature")
-        for video in videos:
-            if total >= needed_seconds + 1 or len(segments) >= MAX_SEGMENTS:
-                break
-            seg, dur = prep_clip(video, idx)
-            if not seg:
-                continue
-            segments.append(seg)
-            total += dur
-            idx += 1
+        take_from(videos, needed_seconds)
+
+    # Last resort: still short (rare) - rather than let ffmpeg loop and
+    # visibly repeat the sequence, pad with more generic, still on-brand
+    # footage until we reach the target.
+    if total < needed_seconds - 1 and len(segments) < MAX_SEGMENTS:
+        print(f"Still short ({total:.1f}s/{needed_seconds:.1f}s) - padding with broader on-topic footage")
+        # Search across all the beats' keywords combined instead of one
+        # narrow phrase, so the pad-out footage still matches the video's
+        # actual subject instead of defaulting to something generic.
+        broad_query = " ".join(QUERIES)
+        videos = search_clips(broad_query)
+        take_from(videos, needed_seconds)
+        if total < needed_seconds - 1:
+            take_from(search_clips("nature"), needed_seconds)
 
     if not segments:
         sys.exit("Could not prepare any video segments")
