@@ -56,6 +56,31 @@ OUT = Path("output")
 WORK.mkdir(exist_ok=True)
 OUT.mkdir(exist_ok=True)
 
+# Cross-video repeat avoidance: a running log of stock-clip URLs used in
+# recent renders, committed back to the repo by the workflow after each run.
+# Without this, two different videos pull from the exact same Pexels/Pixabay
+# catalogs with the same relevance ranking for common beats ("space stars",
+# "ocean waves", etc.), so the single top-ranked clip for a popular phrase
+# kept winning over and over across unrelated videos.
+USED_LOG_PATH = Path("used_clips_log.txt")
+MAX_PERSISTED_LINKS = 600  # roughly the last ~25-30 videos' worth of clips
+
+
+def load_persisted_links():
+    if USED_LOG_PATH.exists():
+        return [l.strip() for l in USED_LOG_PATH.read_text().splitlines() if l.strip()]
+    return []
+
+
+PERSISTED_LINKS = load_persisted_links()
+
+
+def save_used_links(new_links):
+    """Append this video's clips to the log and trim to the cap."""
+    combined = PERSISTED_LINKS + new_links
+    trimmed = combined[-MAX_PERSISTED_LINKS:]
+    USED_LOG_PATH.write_text("\n".join(trimmed) + "\n")
+
 
 def run(cmd):
     print("+", " ".join(str(c) for c in cmd), flush=True)
@@ -269,25 +294,25 @@ def build_ass(words, path):
 # ---------------------------------------------------------------- video ----
 
 def search_pexels(query):
-    # Pull a wider pool of relevance-ranked results (40 instead of 20) and
-    # only vary between the first two pages, so repeated or similar search
-    # phrases across different videos don't always draw from the exact same
-    # tiny top-20 - without diving so deep into Pexels' ranking that the
-    # results stop actually matching the query (that's what pages 3+ did).
-    page = random.randint(1, 2)
+    # Pull the deepest single-call pool Pexels allows (80/page is its max)
+    # instead of gambling on one of two shallow 40-result pages - that
+    # doubled the real pool size we actually see per render, on top of the
+    # cross-video exclusion log below, which is what was causing the same
+    # one or two top-ranked clips to keep winning for common search phrases
+    # across unrelated videos.
     resp = requests.get(
         "https://api.pexels.com/videos/search",
         headers={"Authorization": PEXELS_KEY},
-        params={"query": query, "per_page": 40, "page": page, "orientation": "portrait"},
+        params={"query": query, "per_page": 80, "page": 1, "orientation": "portrait"},
         timeout=30,
     )
     resp.raise_for_status()
     videos = resp.json().get("videos", [])
-    if not videos and page > 1:
+    if not videos:
         resp = requests.get(
             "https://api.pexels.com/videos/search",
             headers={"Authorization": PEXELS_KEY},
-            params={"query": query, "per_page": 40, "page": 1, "orientation": "portrait"},
+            params={"query": query, "per_page": 80, "page": 2, "orientation": "portrait"},
             timeout=30,
         )
         resp.raise_for_status()
@@ -322,22 +347,13 @@ def search_pixabay(query):
     instead of fighting over the same pool."""
     if not PIXABAY_KEY:
         return []
-    page = random.randint(1, 2)
     resp = requests.get(
         "https://pixabay.com/api/videos/",
-        params={"key": PIXABAY_KEY, "q": query, "per_page": 40, "page": page, "safesearch": "true"},
+        params={"key": PIXABAY_KEY, "q": query, "per_page": 100, "page": 1, "safesearch": "true"},
         timeout=30,
     )
     resp.raise_for_status()
     hits = resp.json().get("hits", [])
-    if not hits and page > 1:
-        resp = requests.get(
-            "https://pixabay.com/api/videos/",
-            params={"key": PIXABAY_KEY, "q": query, "per_page": 40, "page": 1, "safesearch": "true"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        hits = resp.json().get("hits", [])
 
     clips = []
     for hit in hits:
@@ -456,9 +472,16 @@ def build_segments(needed_seconds):
     download the same clip twice, and if we're still short after going
     through every beat once, we keep pulling additional - still query-
     relevant, still never-repeated - clips until we actually hit the
-    target length."""
+    target length.
+
+    On top of that in-video dedup, used_links also starts seeded with the
+    persisted cross-video log (see USED_LOG_PATH above), so a clip that
+    already appeared in one of the last ~25-30 videos is skipped here too -
+    that's what stops the same top-ranked "space stars" or "ocean waves"
+    clip from showing up again and again across unrelated videos."""
     segments, total, idx = [], 0.0, 0
-    used_links = set()
+    used_links = set(PERSISTED_LINKS)
+    added_this_video = []
     per_query_target = max(SEGMENT_SECONDS, needed_seconds / len(QUERIES))
 
     def take_from(videos, budget):
@@ -477,6 +500,7 @@ def build_segments(needed_seconds):
             if not seg:
                 continue
             used_links.add(link)
+            added_this_video.append(link)
             segments.append(seg)
             total += dur
             used_here += dur
@@ -531,9 +555,22 @@ def build_segments(needed_seconds):
         if total < needed_seconds - 1:
             take_from(search_clips("nature"), needed_seconds)
 
+    # Absolute last resort: the cross-video exclusion log starved every
+    # query for this particular topic (only plausible for a very narrow
+    # niche subject). Drop that exclusion - keeping only this-video's own
+    # dedup - rather than ever fail the render or let ffmpeg loop and
+    # visibly repeat footage.
+    if total < needed_seconds - 1 and len(segments) < MAX_SEGMENTS:
+        print("Still short even ignoring repeats is better than failing - "
+              "dropping the cross-video exclusion as a last resort")
+        used_links = set(added_this_video)
+        take_from(search_clips(" ".join(QUERIES)), needed_seconds)
+        if total < needed_seconds - 1:
+            take_from(search_clips("nature"), needed_seconds)
+
     if not segments:
         sys.exit("Could not prepare any video segments")
-    return segments
+    return segments, added_this_video
 
 
 def pick_music():
@@ -608,7 +645,7 @@ def main():
         print(f"Captions skipped: {exc}")
         ass_path = None
 
-    segments = build_segments(length)
+    segments, new_links = build_segments(length)
 
     concat_list = WORK / "list.txt"
     concat_list.write_text("".join(f"file '{s.resolve()}'\n" for s in segments))
@@ -629,6 +666,10 @@ def main():
 
     size_mb = (OUT / "video.mp4").stat().st_size / 1024 / 1024
     print(f"Done: {OUT / 'video.mp4'} ({size_mb:.1f} MB)")
+
+    save_used_links(new_links)
+    print(f"Logged {len(new_links)} clip(s) to {USED_LOG_PATH} "
+          f"({min(len(PERSISTED_LINKS) + len(new_links), MAX_PERSISTED_LINKS)} total tracked)")
 
 
 if __name__ == "__main__":
