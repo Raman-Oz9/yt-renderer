@@ -48,6 +48,7 @@ jobs:
         env:
           SCRIPT: ${{ inputs.script }}
           SEARCH_QUERY: ${{ inputs.search_query }}
+          TITLE: ${{ inputs.title }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
