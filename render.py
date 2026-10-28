@@ -10,6 +10,11 @@ Environment:
   SEARCH_QUERY    one or more stock-video search phrases, "|"-separated,
                    one per scene beat, in the order they should appear
                    (required)
+  TITLE           YouTube title - optional, but strongly recommended: a
+                   few anchor keywords are pulled from it and baked into
+                   every stock-footage search, so a vague beat phrase
+                   still lands on-subject instead of on whatever ranks
+                   top for its own (possibly meaningless) words.
   PEXELS_API_KEY  required
   GEMINI_API_KEY  optional - used for TTS voice and falls back to edge-tts
   GEMINI_VOICE    optional - defaults to "Charon" (calm male voice)
@@ -29,6 +34,7 @@ import requests
 
 SCRIPT = os.environ["SCRIPT"].strip()
 QUERIES = [q.strip() for q in os.environ.get("SEARCH_QUERY", "").split("|") if q.strip()] or ["nature"]
+TITLE = os.environ.get("TITLE", "").strip()
 PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -388,7 +394,57 @@ def extract_keywords(text):
     }
 
 
-def search_clips(query):
+# Clickbait/filler words that show up in almost every generated title but
+# say nothing about the actual subject - stripped out when deriving the
+# anchor below, so e.g. "The Weight Of Every Ant On Earth Will Shock You"
+# yields {weight, ant, earth}, not {shock, you, every}.
+TITLE_FILLER = {
+    "will", "never", "always", "secret", "secrets", "hidden", "real",
+    "truth", "shock", "shocking", "shocked", "amazing", "incredible",
+    "unbelievable", "insane", "crazy", "mind", "blowing", "actually",
+    "really", "you", "your", "this", "that", "every", "one", "day", "most",
+    "why", "how", "what", "just", "even", "still", "yet", "before",
+}
+
+
+def extract_anchor_keywords(title, max_words=3):
+    """A small set of words naming the video's real subject, derived from
+    its title. This exists because render.py otherwise has nothing at all
+    tying its stock-footage search back to what the video is actually
+    about - it only ever sees Gemini's 5 freeform search_query phrases, and
+    if even one of those drifts abstract (despite the prompt begging it not
+    to - the same unreliable-self-policing problem as the topic dedup),
+    there was nothing to catch a beat like "collective strength" returning
+    a literal top-ranked clip of people drumming at a concert instead of
+    ants. Every search below gets anchored back to this, so a vague beat
+    query still lands on-subject instead of on whatever ranks top for its
+    own, possibly meaningless, words. Scans the title in its original
+    left-to-right word order (not via extract_keywords's set, which would
+    silently drop the subject noun at random - e.g. 'Ants Outweigh Humans'
+    could lose 'ants' entirely to Python's unordered set iteration)."""
+    ordered = re.findall(r"[a-z]+", title.lower())
+    words = [w for w in ordered
+             if len(w) > 2 and w not in STOPWORDS and w not in TITLE_FILLER]
+    seen, anchor = set(), []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            anchor.append(w)
+        if len(anchor) >= max_words:
+            break
+    return anchor
+
+
+ANCHOR_WORDS = extract_anchor_keywords(TITLE)
+ANCHOR = " ".join(ANCHOR_WORDS)
+if ANCHOR:
+    print(f"Stock-footage anchor (from title): {ANCHOR!r}")
+else:
+    print("No usable anchor words from title - searches will rely on "
+          "search_query alone")
+
+
+def search_clips(query, use_anchor=True):
     """Combine both free stock-footage sources for one query, then rank by
     how well each clip's own slug/tags actually overlap with the search
     query - instead of just trusting the API's relevance ranking and
@@ -399,13 +455,23 @@ def search_clips(query):
     on the API's own relevance order (its best guess for this query) rather
     than shuffling across the whole wide pool, which is how an abstract
     closing-line beat (no literal keyword match exists for it at all) used
-    to end up with a near-random clip from deep in the results."""
-    pexels = search_pexels(query)
-    pixabay = search_pixabay(query)
+    to end up with a near-random clip from deep in the results.
+
+    Every actual API call is anchored to the video's real subject (see
+    ANCHOR above), not just the raw beat phrase Gemini wrote - this is what
+    stops a vague beat like "collective strength" from literally searching
+    just that phrase and getting back a top-ranked clip of a concert crowd
+    that has nothing to do with the video. If even the anchored query comes
+    back with no keyword overlap at all, we fall back to the anchor alone
+    (still on-subject) rather than trusting raw top results for a query
+    that may itself be meaningless."""
+    effective_query = f"{ANCHOR} {query}".strip() if (use_anchor and ANCHOR) else query
+    pexels = search_pexels(effective_query)
+    pixabay = search_pixabay(effective_query)
     clips = pexels + pixabay
     if not clips:
         return []
-    query_words = extract_keywords(query)
+    query_words = extract_keywords(query) | set(ANCHOR_WORDS)
     scored = [(len(c["keywords"] & query_words), c) for c in clips]
     best_score = max(s for s, _ in scored)
     if best_score > 0:
@@ -413,13 +479,19 @@ def search_clips(query):
         if len(chosen) < 6 and best_score > 1:
             chosen += [c for s, c in scored if s == best_score - 1]
         random.shuffle(chosen)
+    elif ANCHOR and use_anchor:
+        # No overlap even with the anchor baked into the query text itself -
+        # don't trust raw top results for what may be a meaningless phrase.
+        # Search the anchor alone instead, which is guaranteed on-subject.
+        print(f"No keyword-matching clips for '{effective_query}' - "
+              f"falling back to the subject anchor '{ANCHOR}' alone")
+        return search_clips(ANCHOR, use_anchor=False)
     else:
-        # No keyword overlap at all for this beat (common for an abstract
-        # "reveal"/closing line with no literal stock-footage equivalent).
-        # Stay close to each API's own top-ranked results instead of
+        # No anchor available (title missing) and no keyword overlap either
+        # - stay close to each API's own top-ranked results instead of
         # shuffling the full pool - only lightly shuffle within that
         # top slice so it's not the exact same clip every run.
-        print(f"No keyword-matching clips for '{query}' - using each source's top results")
+        print(f"No keyword-matching clips for '{effective_query}' - using each source's top results")
         top_slice = pexels[:8] + pixabay[:8]
         random.shuffle(top_slice)
         chosen = top_slice
