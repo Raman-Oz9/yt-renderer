@@ -1,6 +1,8 @@
 name: TTS test (VoiceStudio)
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   tts:
     runs-on: ubuntu-latest
@@ -21,8 +23,16 @@ jobs:
           docker logs vs 2>&1 | tail -20
       - name: Try speech request
         run: |
-          time curl -sS -m 1500 -o out.mp3 -w 'http=%{http_code}\n' http://127.0.0.1:3900/v1/audio/speech \
+          mkdir -p tts-test; START=$(date +%s)
+          curl -sS -m 1500 -o tts-test/out.mp3 -w 'http=%{http_code}\n' http://127.0.0.1:3900/v1/audio/speech \
             -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-            -d '{"model":"omnivoice","input":"Scientists once found a living animal that had been frozen for twenty four thousand years, and it simply woke up.","voice":"default","instruct":"male, middle-aged, low pitch, american accent","seed":7,"response_format":"mp3"}' || true
-          ls -la out.mp3; head -c 400 out.mp3 | strings | head -5
-          docker logs vs 2>&1 | tail -40
+            -d '{"model":"omnivoice","input":"Scientists once found a living animal that had been frozen for twenty four thousand years, and it simply woke up.","voice":"default","instruct":"male, middle-aged, low pitch, american accent","seed":7,"response_format":"mp3"}' > tts-test/result.txt 2>&1 || true
+          echo "seconds=$(( $(date +%s) - START ))" >> tts-test/result.txt
+          ls -la tts-test >> tts-test/result.txt
+          head -c 600 tts-test/out.mp3 | strings | head -5 >> tts-test/result.txt
+          docker logs vs 2>&1 | tail -60 >> tts-test/result.txt
+      - name: Commit result
+        run: |
+          git config user.name "github-actions"; git config user.email "actions@github.com"
+          git add tts-test; git commit -m "TTS test result [skip ci]" || true
+          git pull -q --rebase origin main; git push
