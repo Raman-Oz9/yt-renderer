@@ -301,7 +301,10 @@ def build_ass(words, path):
             parts = []
             for k, (t2, _, _) in enumerate(chunk):
                 if k == j:
-                    parts.append("{\\c&H0000D7FF&}" + clean_word(t2) + "{\\c&H00FFFFFF&}")
+                    # active word: gold + quick pop-in (borrowed from MoneyPrinterTurbo's
+                    # animated subtitles); {\\r} resets back to the base style afterwards
+                    parts.append("{\\c&H0000D7FF&\\fscx118\\fscy118\\t(0,110,\\fscx100\\fscy100)}"
+                                 + clean_word(t2) + "{\\r}")
                 else:
                     parts.append(clean_word(t2))
             lines.append(
@@ -534,8 +537,17 @@ def prep_clip(clip, idx):
     except Exception as exc:
         print(f"Download failed for clip {idx} ({clip.get('source')}): {exc}")
         return None, 0.0
+    # Long stock clips: start from a random point instead of always the first
+    # seconds, so the same source reused by another video shows different footage.
+    start = 0.0
+    try:
+        real = audio_duration(raw)
+        if real > SEGMENT_SECONDS + 3:
+            start = random.uniform(0.0, real - SEGMENT_SECONDS - 0.5)
+    except Exception:
+        start = 0.0
     run([
-        "ffmpeg", "-y", "-loglevel", "error", "-i", raw, "-t", SEGMENT_SECONDS,
+        "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{start:.2f}", "-i", raw, "-t", SEGMENT_SECONDS,
         "-vf", (f"scale={W}:{H}:force_original_aspect_ratio=increase,"
                 f"crop={W}:{H},fps={FPS},setsar=1"),
         "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
@@ -726,6 +738,7 @@ def final_encode(joined, audio, total, ass_path):
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(VIDEO_CRF),
         "-maxrate", f"{VIDEO_MAXRATE_KBPS}k", "-bufsize", f"{VIDEO_MAXRATE_KBPS * 2}k",
         "-pix_fmt", "yuv420p",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k", "-ac", "2",
         "-movflags", "+faststart", OUT / "video.mp4",
     ]
