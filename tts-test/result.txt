@@ -1,0 +1,68 @@
+http=403
+seconds=5
+total 16
+drwxr-xr-x 2 runner runner 4096 Oct 30 10:31 .
+drwxr-xr-x 6 runner runner 4096 Oct 30 10:31 ..
+-rw-r--r-- 1 runner runner  786 Oct 30 10:31 out.mp3
+-rw-r--r-- 1 runner runner   19 Oct 30 10:31 result.txt
+{"error":{"message":"Licence not accepted for k2-fsa/OmniVoice, eustlb/higgs-audio-v2-tokenizer. Review and accept it in Model Catalogue.","type":"permission_error","param":"model","code":"model_licence_required"},"detail":{"code":"model_licence_required","message":"Licence not accepted for k2-fsa/OmniVoice, eustlb/higgs-audio-v2-tokenizer. Review and accept it in Model Catalogue.","models":[{"repo_id":"k2-fsa/OmniVoice","license":"CC-BY-NC (version unspecified); Higgs Audio 2; Meta Llama 3","category":"noncommercial","fingerprint":"v2:d938ea928581624d5732507057d8530320f638ac61426165cbd5abe67b
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/utils/_array_api.py", line 23 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/utils/validation.py", line 24 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/utils/_param_validation.py", line 17 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/utils/_chunking.py", line 11 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/utils/__init__.py", line 9 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1126 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/base.py", line 20 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/sklearn/__init__.py", line 70 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1147 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1126 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1176 in _find_and_load
+  File "/opt/conda/lib/python3.11/site-packages/transformers/generation/candidate_generator.py", line 31 in <module>
+  File "<frozen importlib._bootstrap>", line 241 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 940 in exec_module
+  File "<frozen importlib._bootstrap>", line 690 in _load_unlocked
+  ...
+2026-10-30 10:31:13,974 WARNING [omnivoice.loop_stall] Event loop has not run for 4.0s; /health cannot answer. Stacks of all threads follow - the main thread's frame is the blocking call.
+INFO:     172.17.0.1:49666 - "POST /v1/audio/speech HTTP/1.1" 403 Forbidden
