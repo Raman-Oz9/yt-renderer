@@ -81,6 +81,21 @@ def load_persisted_links():
 PERSISTED_LINKS = load_persisted_links()
 
 
+def clip_key(link):
+    """Stable identity for a stock clip, independent of which size/quality
+    file URL happened to be picked. The same Pexels/Pixabay video can come
+    back under a different file URL (different resolution/fps variant), which
+    a plain URL comparison treats as a brand-new clip - so a repeat slipped
+    through. Compare by the source's own video ID instead."""
+    m = re.search(r"video-files/(\d+)/", link)
+    if m:
+        return "px:" + m.group(1)
+    m = re.search(r"/video/\d{4}/\d{2}/\d{2}/(\d+)", link)
+    if m:
+        return "pb:" + m.group(1)
+    return link
+
+
 def save_used_links(new_links):
     """Append this video's clips to the log and trim to the cap."""
     combined = PERSISTED_LINKS + new_links
@@ -476,7 +491,7 @@ def search_clips(query, use_anchor=True):
     best_score = max(s for s, _ in scored)
     if best_score > 0:
         chosen = [c for s, c in scored if s == best_score]
-        if len(chosen) < 6 and best_score > 1:
+        if best_score > 1:
             chosen += [c for s, c in scored if s == best_score - 1]
         random.shuffle(chosen)
     elif ANCHOR and use_anchor:
@@ -526,7 +541,10 @@ def prep_clip(clip, idx):
         "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
         "-pix_fmt", "yuv420p", seg,
     ])
-    dur = min(float(clip.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
+    try:
+        dur = min(audio_duration(seg), SEGMENT_SECONDS)  # real length, not API metadata
+    except Exception:
+        dur = min(float(clip.get("duration", SEGMENT_SECONDS)), SEGMENT_SECONDS)
     return seg, dur
 
 
@@ -552,7 +570,7 @@ def build_segments(needed_seconds):
     that's what stops the same top-ranked "space stars" or "ocean waves"
     clip from showing up again and again across unrelated videos."""
     segments, total, idx = [], 0.0, 0
-    used_links = set(PERSISTED_LINKS)
+    used_links = {clip_key(l) for l in PERSISTED_LINKS}
     added_this_video = []
     per_query_target = max(SEGMENT_SECONDS, needed_seconds / len(QUERIES))
 
@@ -566,12 +584,12 @@ def build_segments(needed_seconds):
                     or len(segments) >= MAX_SEGMENTS):
                 break
             link = video.get("link")
-            if not link or link in used_links:
+            if not link or clip_key(link) in used_links:
                 continue
             seg, dur = prep_clip(video, idx)
             if not seg:
                 continue
-            used_links.add(link)
+            used_links.add(clip_key(link))
             added_this_video.append(link)
             segments.append(seg)
             total += dur
@@ -635,7 +653,7 @@ def build_segments(needed_seconds):
     if total < needed_seconds - 1 and len(segments) < MAX_SEGMENTS:
         print("Still short even ignoring repeats is better than failing - "
               "dropping the cross-video exclusion as a last resort")
-        used_links = set(added_this_video)
+        used_links = {clip_key(l) for l in added_this_video}
         take_from(search_clips(" ".join(QUERIES)), needed_seconds)
         if total < needed_seconds - 1:
             take_from(search_clips("nature"), needed_seconds)
@@ -684,14 +702,26 @@ def mix_audio(voice, total):
 
 
 def final_encode(joined, audio, total, ass_path):
+    # Never loop the whole reel (that visibly replays the opening clips). If
+    # the footage somehow ends before the narration, hold the last frame.
+    try:
+        have = audio_duration(joined)
+    except Exception:
+        have = total
+    pad = max(0.0, total - have)
+    vf = []
+    if pad > 0.05:
+        vf.append(f"tpad=stop_mode=clone:stop_duration={pad:.2f}")
+    if ass_path:
+        vf.append(f"ass={ass_path}")
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
-        "-stream_loop", "-1", "-i", joined, "-i", audio,
+        "-i", joined, "-i", audio,
         "-t", f"{total:.2f}",
         "-map", "0:v", "-map", "1:a",
     ]
-    if ass_path:
-        cmd += ["-vf", f"ass={ass_path}"]
+    if vf:
+        cmd += ["-vf", ",".join(vf)]
     cmd += [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", str(VIDEO_CRF),
         "-maxrate", f"{VIDEO_MAXRATE_KBPS}k", "-bufsize", f"{VIDEO_MAXRATE_KBPS * 2}k",
