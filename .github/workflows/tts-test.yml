@@ -1,4 +1,4 @@
-name: TTS test (VoiceStudio)
+name: TTS test (Kokoro)
 on:
   workflow_dispatch:
 permissions:
@@ -6,38 +6,37 @@ permissions:
 jobs:
   tts:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Start VoiceStudio (CPU)
+      - name: Install
         run: |
-          KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-          echo "KEY=$KEY" >> $GITHUB_ENV
-          docker pull ghcr.io/debpalash/voicestudio:stable
-          docker run -d --name vs -p 127.0.0.1:3900:3900 -e OMNIVOICE_API_KEY="$KEY" -e OMNIVOICE_ANALYTICS_DISABLED=1 ghcr.io/debpalash/voicestudio:stable
-      - name: Wait for server
+          sudo apt-get update -qq && sudo apt-get install -y -qq espeak-ng ffmpeg
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet kokoro soundfile numpy
+      - name: Generate samples
         run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3900/.well-known/voicestudio-speech || true)
-            echo "try $i -> $code"; [ "$code" = "200" ] && break; sleep 5
-          done
-          docker logs vs 2>&1 | tail -20
-      - name: Try speech request
-        run: |
-          mkdir -p tts-test; START=$(date +%s)
-          curl -sS -m 1500 -o tts-test/out.mp3 -w 'http=%{http_code}\n' http://127.0.0.1:3900/v1/audio/speech \
-            -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-            -d '{"model":"omnivoice","input":"Scientists once found a living animal that had been frozen for twenty four thousand years, and it simply woke up.","voice":"default","instruct":"male, middle-aged, low pitch, american accent","seed":7,"response_format":"mp3"}' > tts-test/result.txt 2>&1 || true
-          echo "seconds=$(( $(date +%s) - START ))" >> tts-test/result.txt
+          mkdir -p tts-test
+          python - <<'PY' 2>&1 | tee tts-test/result.txt
+          import time, soundfile as sf, numpy as np
+          from kokoro import KPipeline
+          text = ("Scientists once found a living animal that had been frozen for twenty four thousand years, and it simply woke up. "
+                  "A tiny creature called a bdelloid rotifer was pulled from Siberian permafrost, thawed in a lab, and began to reproduce as if nothing had happened. "
+                  "Think about that. While empires rose and fell, while humans learned to write, this animal sat in the dark, paused between one heartbeat and the next. "
+                  "Its secret is a kind of molecular repair crew that mends broken DNA the moment the ice releases it. "
+                  "So what else is lying frozen out there, waiting for the world to warm up?")
+          t0=time.time(); pipe = KPipeline(lang_code='a'); print("load_s", round(time.time()-t0,1))
+          for v in ["am_michael","am_adam","bm_george","bm_lewis"]:
+              pipe_v = pipe if v.startswith("a") else KPipeline(lang_code='b')
+              t0=time.time(); chunks=[a for _,_,a in pipe_v(text, voice=v, speed=0.95)]
+              audio=np.concatenate(chunks); dur=len(audio)/24000
+              sf.write(f"tts-test/{v}.wav", audio, 24000)
+              print(v, "audio_s", round(dur,1), "gen_s", round(time.time()-t0,1))
+          PY
+          for f in tts-test/*.wav; do ffmpeg -y -loglevel error -i $f -b:a 128k ${f%.wav}.mp3; rm $f; done
           ls -la tts-test >> tts-test/result.txt
-          head -c 600 tts-test/out.mp3 | strings | head -5 >> tts-test/result.txt
-          docker logs vs 2>&1 | tail -60 >> tts-test/result.txt
-      - name: Show result
-        run: |
-          MSG=$(head -c 1500 tts-test/result.txt | sed ':a;N;$!ba;s/\n/%0A/g')
-          echo "::notice title=tts-result::$MSG"
-      - name: Commit result
+      - name: Commit
         run: |
           git config user.name "github-actions"; git config user.email "actions@github.com"
-          git add tts-test; git commit -m "TTS test result [skip ci]" || true
+          git add tts-test; git commit -m "TTS samples [skip ci]" || true
           git pull -q --rebase origin main; git push
