@@ -24,6 +24,11 @@ STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
 MIN_SCENE, MAX_SCENE = 3.0, 7.5
 
 
+def note(msg):
+    print(f"::warning title=ai_scenes::{str(msg)[:300]}", flush=True)
+
+
+
 def split_sentences(text):
     parts = re.split(r"(?<=[.!?…])\s+", text.strip())
     return [p for p in parts if p.strip()]
@@ -105,15 +110,15 @@ def write_prompts(scenes, title):
                       "generationConfig": {"responseMimeType": "application/json"}},
                 timeout=90)
             if r.status_code != 200:
-                print(f"Prompt writer {model}: {r.status_code} {r.text[:150]}")
+                note(f"Prompt writer {model}: {r.status_code} {r.text[:150]}")
                 continue
             txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
             arr = json.loads(txt)
             if isinstance(arr, list) and len(arr) == len(scenes):
-                print(f"Scene prompts written by {model}")
+                note(f"Scene prompts written by {model}")
                 return [f"{str(p).strip()}, {STYLE}" for p in arr]
         except Exception as exc:
-            print(f"Prompt writer {model} failed: {exc}")
+            note(f"Prompt writer {model} failed: {exc}")
     return fallback
 
 
@@ -127,7 +132,7 @@ def gemini_image(prompt, dest):
                       "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]}},
                 timeout=120)
             if r.status_code != 200:
-                print(f"  {model}: {r.status_code} {r.text[:120]}")
+                note(f"  {model}: {r.status_code} {r.text[:120]}")
                 continue
             for p in r.json()["candidates"][0]["content"]["parts"]:
                 inl = p.get("inlineData") or p.get("inline_data")
@@ -135,7 +140,7 @@ def gemini_image(prompt, dest):
                     Path(dest).write_bytes(base64.b64decode(inl["data"]))
                     return model
         except Exception as exc:
-            print(f"  {model} failed: {exc}")
+            note(f"  {model} failed: {exc}")
     return None
 
 
@@ -148,9 +153,9 @@ def pollinations_image(prompt, dest):
                 "content-type", "").startswith("image"):
             Path(dest).write_bytes(r.content)
             return "pollinations"
-        print(f"  pollinations: {r.status_code} {len(r.content)}B")
+        note(f"  pollinations: {r.status_code} {len(r.content)}B")
     except Exception as exc:
-        print(f"  pollinations failed: {exc}")
+        note(f"  pollinations failed: {exc}")
     return None
 
 
@@ -186,7 +191,7 @@ def animate(img, dur, dest, idx, w, h, fps):
 
 def build_ai_segments(script, title, words, length, work, w, h, fps):
     scenes = plan_scenes(script, words, length)
-    print(f"AI scenes planned: {len(scenes)}")
+    note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
     segs, ok = [], 0
     last_img = None
@@ -196,21 +201,21 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
         if src:
             ok += 1
             last_img = img
-            print(f"Scene {i + 1}/{len(scenes)} image via {src}")
+            note(f"Scene {i + 1}/{len(scenes)} image via {src}")
         elif last_img:
             img = last_img  # reuse previous picture rather than break the timeline
-            print(f"Scene {i + 1}: image failed, reusing previous")
+            note(f"Scene {i + 1}: image failed, reusing previous")
         else:
-            print(f"Scene {i + 1}: image failed")
+            note(f"Scene {i + 1}: image failed")
             return None
         seg = Path(work) / f"aiseg_{i}.mp4"
         try:
             animate(img, sc["t1"] - sc["t0"], seg, i, w, h, fps)
         except subprocess.CalledProcessError as exc:
-            print(f"Animate failed scene {i + 1}: {exc}")
+            note(f"Animate failed scene {i + 1}: {exc}")
             return None
         segs.append(seg)
     if ok < max(2, int(len(scenes) * 0.6)):
-        print(f"Only {ok}/{len(scenes)} images generated, falling back to stock footage")
+        note(f"Only {ok}/{len(scenes)} images generated, falling back to stock footage")
         return None
     return segs

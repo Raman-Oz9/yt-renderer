@@ -807,7 +807,7 @@ def main():
             segments = ai_scenes.build_ai_segments(SCRIPT, TITLE, words, length,
                                                    WORK, W, H, FPS)
         except Exception as exc:
-            print(f"AI scenes failed, using stock footage: {exc}", flush=True)
+            print(f"::warning title=ai_scenes::AI scenes failed: {str(exc)[:250]}", flush=True)
             segments = None
     if not segments:
         segments, new_links = build_segments(length)
