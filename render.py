@@ -800,7 +800,17 @@ def main():
         print(f"Captions skipped: {exc}")
         ass_path = None
 
-    segments, new_links = build_segments(length)
+    segments, new_links = None, []
+    if os.environ.get("AI_SCENES", "1") != "0":
+        try:
+            import ai_scenes
+            segments = ai_scenes.build_ai_segments(SCRIPT, TITLE, words, length,
+                                                   WORK, W, H, FPS)
+        except Exception as exc:
+            print(f"AI scenes failed, using stock footage: {exc}", flush=True)
+            segments = None
+    if not segments:
+        segments, new_links = build_segments(length)
 
     concat_list = WORK / "list.txt"
     concat_list.write_text("".join(f"file '{s.resolve()}'\n" for s in segments))
