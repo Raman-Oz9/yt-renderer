@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-TEXT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]
 STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
          "photorealistic, vertical 9:16 composition, no text, no captions, no watermark")
@@ -132,7 +132,7 @@ def gemini_image(prompt, dest):
                       "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]}},
                 timeout=120)
             if r.status_code != 200:
-                note(f"  {model}: {r.status_code} {r.text[:120]}")
+                note(f"  {model}: {r.status_code} {re.sub(r'\s+', ' ', r.text)[60:300]}")
                 continue
             for p in r.json()["candidates"][0]["content"]["parts"]:
                 inl = p.get("inlineData") or p.get("inline_data")
