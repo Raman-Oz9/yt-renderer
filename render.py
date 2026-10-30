@@ -42,6 +42,8 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Orus")  # deep, firm male narrator voice
 EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
+KOKORO_VOICES = ["am_adam", "bm_george"]  # chosen by the channel owner
+KOKORO_SPEED = 0.95
 PITCH_FACTOR = 0.92      # <1 lowers pitch further on top of the voice itself, duration preserved
 
 MAX_SECONDS = 170       # extended Shorts allow up to 3 min; stay comfortably under that
@@ -207,8 +209,46 @@ def deepen_voice(src, dest, factor=PITCH_FACTOR):
     return dest
 
 
+def kokoro_tts(dest):
+    """Kokoro-82M (Apache-2.0) narration. Picks am_adam or bm_george at random.
+    Returns word timings [(word, start, end)] when available, else None."""
+    import numpy as np
+    import soundfile as sf
+    from kokoro import KPipeline
+    voice = random.choice(KOKORO_VOICES)
+    pipe = KPipeline(lang_code="b" if voice.startswith("b") else "a")
+    chunks, words, offset = [], [], 0.0
+    for result in pipe(SCRIPT, voice=voice, speed=KOKORO_SPEED, split_pattern=r"\n+"):
+        audio = result.audio
+        if audio is None:
+            continue
+        audio = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
+        for t in (getattr(result, "tokens", None) or []):
+            st, en = getattr(t, "start_ts", None), getattr(t, "end_ts", None)
+            txt = (getattr(t, "text", "") or "").strip()
+            if st is None or en is None or not clean_word(txt):
+                continue
+            words.append((txt, offset + st, offset + en))
+        chunks.append(audio)
+        offset += len(audio) / 24000
+    if not chunks:
+        raise RuntimeError("Kokoro produced no audio")
+    sf.write(str(dest), np.concatenate(chunks), 24000)
+    print(f"Voice OK: Kokoro {voice} ({offset:.1f}s, {len(words)} timed words)")
+    n_script = len([t for t in SCRIPT.split() if clean_word(t)])
+    return words if n_script * 0.7 <= len(words) <= n_script * 1.5 else None
+
+
 def make_voice():
     """Returns (audio_path, word_timings_or_None)."""
+    try:
+        raw = WORK / "voice_kokoro.wav"
+        words = kokoro_tts(raw)
+        if words:  # timings are only valid for the untrimmed audio
+            return raw, words
+        return trim_silence(raw, WORK / "voice.wav"), None
+    except Exception as exc:
+        print(f"Kokoro unavailable, falling back to Gemini TTS: {exc}", flush=True)
     if GEMINI_KEY:
         try:
             raw = WORK / "voice_raw.wav"
