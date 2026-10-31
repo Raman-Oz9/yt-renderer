@@ -245,8 +245,9 @@ def ovh_image(prompt, dest):
     tok = os.environ.get("OVH_AI_TOKEN", "").strip()
     if tok:
         hdr["Authorization"] = f"Bearer {tok}"
-    body = {"prompt": prompt[:1500],
-            "negative_prompt": "text, letters, words, watermark, logo, blurry, deformed, low quality"}
+    body = {"prompt": prompt[:1400] + ", 85mm lens, ultra sharp focus, intricate details",
+            "negative_prompt": ("text, letters, watermark, logo, blurry, soft, deformed, distorted, "
+                                "disfigured, extra limbs, low quality, oversaturated, cartoon")}
     for attempt in range(2):
         try:
             r = requests.post(url, headers=hdr, json=body, timeout=120)
