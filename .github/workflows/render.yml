@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y -qq ffmpeg espeak-ng
           pip install edge-tts requests soundfile numpy
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install kokoro
+          pip install kokoro huggingface_hub pillow
 
       - name: Render video
         env:
