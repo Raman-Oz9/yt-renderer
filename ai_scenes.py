@@ -18,6 +18,8 @@ import requests
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
+CF_ACCOUNT = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
 HF_MODELS = ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]
 TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]
@@ -179,9 +181,34 @@ def hf_image(prompt, dest):
     return None
 
 
+def cf_image(prompt, dest):
+    """Cloudflare Workers AI (free daily allowance)."""
+    base = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/"
+    hdr = {"Authorization": f"Bearer {CF_TOKEN}"}
+    tries = [("@cf/black-forest-labs/flux-1-schnell", {"prompt": prompt[:2000], "steps": 6}),
+             ("@cf/stabilityai/stable-diffusion-xl-base-1.0",
+              {"prompt": prompt[:1000], "width": 768, "height": 1344, "num_steps": 20})]
+    for model, body in tries:
+        try:
+            r = requests.post(base + model, headers=hdr, json=body, timeout=150)
+            if r.status_code == 200:
+                if r.headers.get("content-type", "").startswith("image"):
+                    Path(dest).write_bytes(r.content)
+                    return "cloudflare " + model.split("/")[-1]
+                data = r.json().get("result", {})
+                if data.get("image"):
+                    Path(dest).write_bytes(base64.b64decode(data["image"]))
+                    return "cloudflare " + model.split("/")[-1]
+            note(f"  cf {model}: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:200]}")
+        except Exception as exc:
+            note(f"  cf {model} failed: {exc}")
+    return None
+
+
 def make_image(prompt, dest):
     for attempt in range(2):
-        used = ((HF_TOKEN and hf_image(prompt, dest))
+        used = ((CF_ACCOUNT and CF_TOKEN and cf_image(prompt, dest))
+                or (HF_TOKEN and hf_image(prompt, dest))
                 or (GEMINI_KEY and gemini_image(prompt, dest))
                 or pollinations_image(prompt, dest))
         if used:
