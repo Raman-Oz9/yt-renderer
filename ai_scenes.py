@@ -11,6 +11,7 @@ import os
 import random
 import re
 import subprocess
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -222,18 +223,115 @@ def cf_image(prompt, dest):
                 if data.get("image"):
                     Path(dest).write_bytes(base64.b64decode(data["image"]))
                     return "cloudflare " + model.split("/")[-1]
+            if r.status_code == 429:
+                _dead.add("cf")
+                note("  cf: daily free allocation used up, skipping Cloudflare for this run")
+                return None
             note(f"  cf {model}: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:200]}")
         except Exception as exc:
             note(f"  cf {model} failed: {exc}")
     return None
 
 
-def make_image(prompt, dest):
+_horde_timeouts = []
+_BUDGET_END = [float("inf")]   # wall-clock cutoff for picture generation
+_dead = set()   # providers that hit a hard limit this run - skip them for the rest
+
+
+def ovh_image(prompt, dest):
+    """OVHcloud AI Endpoints, Stable Diffusion XL (free; anonymous = 2 req/min)."""
+    url = "https://stable-diffusion-xl.endpoints.kepler.ai.cloud.ovh.net/api/text2image"
+    hdr = {"Content-Type": "application/json", "accept": "application/octet-stream"}
+    tok = os.environ.get("OVH_AI_TOKEN", "").strip()
+    if tok:
+        hdr["Authorization"] = f"Bearer {tok}"
+    body = {"prompt": prompt[:1500],
+            "negative_prompt": "text, letters, words, watermark, logo, blurry, deformed, low quality"}
     for attempt in range(2):
-        used = ((CF_ACCOUNT and CF_TOKEN and cf_image(prompt, dest))
-                or (HF_TOKEN and hf_image(prompt, dest))
-                or (GEMINI_KEY and gemini_image(prompt, dest))
-                or pollinations_image(prompt, dest))
+        try:
+            r = requests.post(url, headers=hdr, json=body, timeout=120)
+            if r.status_code == 200 and len(r.content) > 5000:
+                Path(dest).write_bytes(r.content)
+                return "ovh sdxl"
+            if r.status_code == 429:
+                if attempt == 0:
+                    time.sleep(35)   # anonymous limit is 2 requests per minute
+                    continue
+                _dead.add("ovh")     # still limited: stop wasting time on it
+            note(f"  ovh: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:150]}")
+            if r.status_code in (401, 403):
+                _dead.add("ovh")
+            break
+        except Exception as exc:
+            note(f"  ovh failed: {exc}")
+            break
+    return None
+
+
+def horde_image(prompt, dest):
+    """AI Horde (free, crowdsourced, queue based)."""
+    base = "https://aihorde.net/api/v2/"
+    hdr = {"apikey": os.environ.get("HORDE_API_KEY", "").strip() or "0000000000",
+           "Client-Agent": "yt-renderer:1.0:github.com/Raman-Oz9/yt-renderer",
+           "Content-Type": "application/json"}
+    body = {"prompt": prompt[:900] + " ### text, letters, watermark, blurry, deformed",
+            "params": {"width": 576, "height": 1024, "steps": 25, "n": 1},
+            "nsfw": False, "censor_nsfw": True, "r2": True}
+    try:
+        r = requests.post(base + "generate/async", headers=hdr, json=body, timeout=60)
+        if r.status_code not in (200, 202):
+            note(f"  horde submit: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:150]}")
+            return None
+        rid = r.json()["id"]
+        deadline = time.time() + 150
+        while time.time() < deadline:
+            time.sleep(4)
+            c = requests.get(base + f"generate/check/{rid}", headers=hdr, timeout=30).json()
+            if c.get("faulted"):
+                note("  horde: job faulted")
+                return None
+            if c.get("done"):
+                st = requests.get(base + f"generate/status/{rid}", headers=hdr, timeout=30).json()
+                gens = st.get("generations") or []
+                if not gens or gens[0].get("censored"):
+                    return None
+                img = requests.get(gens[0]["img"], timeout=60)
+                if img.status_code == 200 and len(img.content) > 3000:
+                    Path(dest).write_bytes(img.content)
+                    return "ai horde"
+                return None
+        try:  # give up and free the queue slot
+            requests.delete(base + f"generate/status/{rid}", headers=hdr, timeout=15)
+        except Exception:
+            pass
+        note("  horde: timed out waiting in queue")
+        _horde_timeouts.append(1)
+        if len(_horde_timeouts) >= 2:
+            _dead.add("horde")
+    except Exception as exc:
+        note(f"  horde failed: {exc}")
+    return None
+
+
+def make_image(prompt, dest):
+    """Free providers in order; a provider that hits its daily cap is skipped
+    for the rest of the run so we don't waste time on it."""
+    if time.time() > _BUDGET_END[0]:
+        return None
+    for attempt in range(2):
+        if CF_ACCOUNT and CF_TOKEN and "cf" not in _dead:
+            used = cf_image(prompt, dest)
+            if used:
+                return used
+        if "ovh" not in _dead:
+            used = ovh_image(prompt, dest)
+            if used:
+                return used
+        if "horde" not in _dead:
+            used = horde_image(prompt, dest)
+            if used:
+                return used
+        used = pollinations_image(prompt, dest)
         if used:
             return used
     return None
@@ -313,6 +411,7 @@ def join_with_fades(segs, spans, dest):
 
 def build_ai_segments(script, title, words, length, work, w, h, fps):
     note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
+    _BUDGET_END[0] = time.time() + 14 * 60
     scenes = plan_scenes(script, words, length)
     note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
