@@ -358,7 +358,7 @@ def check_image(img, scene_text):
                f"The image should illustrate: '{scene_text[:200]}'. Look for CLEAR visible mistakes: wrong number "
                "of fingers, malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
                "way, equipment merged with a body or used impossibly, duplicated or melted objects, garbled "
-               "text or letters, or an image that does not match the topic at all. Minor softness is fine. "
+               "text or letters. Do NOT judge whether it matches the topic, and minor softness is fine. "
                'Reply ONLY with JSON: {"ok": true or false, "problem": "short reason"}. '
                "Say ok=false only if a mistake is clearly visible.")
         for model in TEXT_MODELS:
