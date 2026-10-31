@@ -126,6 +126,13 @@ def write_prompts(scenes, title):
         "that literally shows what that line says (the subject, place, action), as a "
         "single concrete scene a camera could film. No text, no logos, no real "
         "people's faces by name. Keep the same visual look across all scenes. "
+        "AI-ERROR AVOIDANCE (very important, image generators get these wrong): "
+        "never show hands, fingers, close-up faces, people using tools or equipment, "
+        "or crowds. If a person is essential, show them tiny and far away, from behind, "
+        "or as a dark silhouette. Prefer landscapes, objects, creatures, macro shots, "
+        "architecture, space, nature and abstract science visuals. Keep each scene to ONE "
+        "clear subject with a simple composition - no machinery, no devices being operated, "
+        "no complicated mechanisms. "
         "Max 40 words each. Return ONLY a JSON array of strings, one per line, "
         f"in order, exactly {len(scenes)} items.\n\n{listing}"
     )
@@ -338,6 +345,41 @@ def make_image(prompt, dest):
     return None
 
 
+def check_image(img, scene_text):
+    """Ask Gemini (vision) to spot typical AI-image mistakes. Returns (ok, problem)."""
+    if not GEMINI_KEY:
+        return True, ""
+    try:
+        small = Path(str(img) + ".chk.jpg")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(img), "-vf", "scale=640:-2",
+                        "-q:v", "4", str(small)], check=True)
+        data = base64.b64encode(small.read_bytes()).decode()
+        ask = ("You are a strict quality inspector for AI-generated images used in a documentary video. "
+               f"The image should illustrate: '{scene_text[:200]}'. Look for CLEAR visible mistakes: wrong number "
+               "of fingers, malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
+               "way, equipment merged with a body or used impossibly, duplicated or melted objects, garbled "
+               "text or letters, or an image that does not match the topic at all. Minor softness is fine. "
+               'Reply ONLY with JSON: {"ok": true or false, "problem": "short reason"}. '
+               "Say ok=false only if a mistake is clearly visible.")
+        for model in TEXT_MODELS:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": GEMINI_KEY},
+                json={"contents": [{"parts": [{"text": ask},
+                                              {"inlineData": {"mimeType": "image/jpeg", "data": data}}]}],
+                      "generationConfig": {"responseMimeType": "application/json"}},
+                timeout=60)
+            if r.status_code != 200:
+                continue
+            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            m = re.search(r"\{.*\}", txt, re.S)
+            res = json.loads(m.group(0))
+            return bool(res.get("ok", True)), str(res.get("problem", ""))[:120]
+    except Exception as exc:
+        note(f"  quality check skipped: {exc}")
+    return True, ""
+
+
 def _dims(img):
     out = subprocess.check_output([
         "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -418,9 +460,19 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     prompts = write_prompts(scenes, title)
     segs, ok = [], 0
     last_img = None
+    redo_left = [max(3, len(scenes) // 3)]   # cap on regenerations per video
     for i, (sc, pr) in enumerate(zip(scenes, prompts)):
         img = Path(work) / f"ai_{i}.img"
         src = make_image(pr, img)
+        if src and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
+            good, why = check_image(img, sc["text"])
+            if not good:
+                note(f"Scene {i + 1}: flagged ({why}); regenerating")
+                redo_left[0] -= 1
+                img2 = Path(work) / f"ai_{i}b.img"
+                src2 = make_image(pr + ", anatomically correct, simple clean composition", img2)
+                if src2:
+                    img, src = img2, src2
         if src:
             ok += 1
             last_img = img
