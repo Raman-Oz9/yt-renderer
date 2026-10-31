@@ -30,35 +30,7 @@ def ovh_oai(pname, prompt, size):
     except Exception as e:
         say(f"[ovh {size}/{pname}] error {e}")
 
-for size in ["768x1344", "832x1216"]:
-    for pn in ["scientist", "ruins"]:
+for size in ["1024x1536"]:
+    for pn in ["scientist", "ruins", "ice"]:
         ovh_oai(pn, PROMPTS[pn], size); time.sleep(31)
-
-HORDE = "https://aihorde.net/api/v2/"
-HDR = {"apikey": "0000000000", "Client-Agent": "yt-renderer:1.0:github.com/Raman-Oz9/yt-renderer",
-       "Content-Type": "application/json"}
-def horde(model, pname, prompt, w, h, steps):
-    tag = re.sub(r"[^a-z0-9]+", "_", model.lower())
-    body = {"prompt": prompt + " ### " + NEG, "params": {"width": w, "height": h, "steps": steps, "n": 1},
-            "models": [model], "nsfw": False, "r2": True}
-    try:
-        r = requests.post(HORDE + "generate/async", headers=HDR, json=body, timeout=60)
-        if r.status_code not in (200, 202):
-            say(f"[{model} {w}x{h}/{pname}] submit {r.status_code} {r.text[:260]}"); return
-        rid = r.json()["id"]; t0 = time.time()
-        while time.time() - t0 < 200:
-            time.sleep(5)
-            c = requests.get(HORDE + f"generate/check/{rid}", headers=HDR, timeout=30).json()
-            if c.get("faulted"): say(f"[{model}/{pname}] faulted"); return
-            if c.get("done"):
-                g = requests.get(HORDE + f"generate/status/{rid}", headers=HDR, timeout=30).json()["generations"][0]
-                (OUT / f"horde_{tag}_{pname}.webp").write_bytes(requests.get(g["img"], timeout=60).content)
-                say(f"[{model}/{pname}] ok {time.time()-t0:.0f}s"); return
-        requests.delete(HORDE + f"generate/status/{rid}", headers=HDR, timeout=15)
-        say(f"[{model}/{pname}] timeout")
-    except Exception as e:
-        say(f"[{model}/{pname}] error {e}")
-
-for model, w, h, steps in [("Flux.1-Schnell fp8 (Compact)", 512, 768, 6), ("Juggernaut XL", 512, 768, 20)]:
-    horde(model, "scientist", PROMPTS["scientist"], w, h, steps); time.sleep(3)
 (OUT / "log.txt").write_text("\n".join(log))
