@@ -27,7 +27,7 @@ STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
          "photorealistic, vertical 9:16 composition, no text, no letters, no words, "
          "no signs, no logos, no captions, no watermark")
 MIN_SCENE, MAX_SCENE = 2.2, 4.6   # fast cuts keep still images feeling alive
-OVERLAP = 0.3                      # cross-dissolve length between scenes
+OVERLAP = 0.7                      # slow cross-fade between scenes
 
 
 _seen = set()
@@ -238,26 +238,51 @@ def make_image(prompt, dest):
     return None
 
 
+def _dims(img):
+    out = subprocess.check_output([
+        "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        "stream=width,height", "-of", "csv=p=0:s=x", str(img)]).decode().strip()
+    iw, ih = out.split("x")[:2]
+    return int(iw), int(ih)
+
+
 def animate(img, dur, dest, idx, w, h, fps):
-    """Slow zoom / pan over the picture (Ken Burns), exactly `dur` seconds."""
+    """Gentle zoom / drift over the picture, exactly `dur` seconds.
+
+    Square-ish pictures are shown whole (full width) over a blurred copy of
+    themselves, so nothing important is cropped; tall pictures fill the frame."""
     frames = max(2, int(round(dur * fps)))
+    iw, ih = _dims(img)
+    portrait = (iw / ih) < 0.7
+    zmax = 0.07 if not portrait else 0.10
     style = idx % 4
-    z = "min(1.0+0.18*on/{f},1.18)".format(f=frames)
-    zout = "max(1.18-0.18*on/{f},1.0)".format(f=frames)
-    if style == 0:   # push in, centre
-        zz, x, y = z, "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
-    elif style == 1:  # pull out
+    zin = f"min(1.0+{zmax}*on/{frames},{1 + zmax})"
+    zout = f"max({1 + zmax}-{zmax}*on/{frames},1.0)"
+    if style == 0:
+        zz, x, y = zin, "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    elif style == 1:
         zz, x, y = zout, "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
-    elif style == 2:  # push in drifting right
-        zz, x, y = z, f"(iw-iw/zoom)*on/{frames}", "ih/2-(ih/zoom/2)"
-    else:             # push in drifting up
-        zz, x, y = z, "iw/2-(iw/zoom/2)", f"(ih-ih/zoom)*(1-on/{frames})"
-    vf = (f"scale=2*{w}:2*{h}:force_original_aspect_ratio=increase,crop=2*{w}:2*{h},"
-          f"zoompan=z='{zz}':x='{x}':y='{y}':d={frames}:s={w}x{h}:fps={fps},"
-          "setsar=1,format=yuv420p")
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(img), "-vf", vf,
-                    "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast",
-                    "-crf", "23", "-pix_fmt", "yuv420p", str(dest)], check=True)
+    elif style == 2:
+        zz, x, y = zin, f"(iw-iw/zoom)*on/{frames}", "ih/2-(ih/zoom/2)"
+    else:
+        zz, x, y = zin, "iw/2-(iw/zoom/2)", f"(ih-ih/zoom)*(1-on/{frames})"
+    if portrait:
+        vf = (f"scale=2*{w}:2*{h}:force_original_aspect_ratio=increase,crop=2*{w}:2*{h},"
+              f"zoompan=z='{zz}':x='{x}':y='{y}':d={frames}:s={w}x{h}:fps={fps},"
+              "setsar=1,format=yuv420p")
+        fc = None
+    else:
+        fh = int(round(w * ih / iw / 2)) * 2
+        fc = (f"[0:v]split[a][b];"
+              f"[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+              f"gblur=sigma=45,eq=brightness=-0.10:saturation=1.1[bg];"
+              f"[b]scale=2*{w}:-2,zoompan=z='{zz}':x='{x}':y='{y}':d={frames}:s={w}x{fh}:fps={fps},"
+              f"setsar=1[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps={fps},format=yuv420p[v]")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(img)]
+    cmd += (["-vf", vf] if fc is None else ["-filter_complex", fc, "-map", "[v]"])
+    cmd += ["-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "23", "-pix_fmt", "yuv420p", str(dest)]
+    subprocess.run(cmd, check=True)
 
 
 def join_with_fades(segs, spans, dest):
@@ -268,12 +293,11 @@ def join_with_fades(segs, spans, dest):
                         "-vf", "noise=alls=7:allf=t,vignette=PI/6,format=yuv420p",
                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(dest)], check=True)
         return
-    trans = ["fade", "fade", "smoothleft", "fade", "circlecrop", "fade", "smoothright", "fade"]
     parts, cum, last = [], 0.0, "[0:v]"
     for k in range(n - 1):
         cum += spans[k]
         out = f"[x{k}]"
-        parts.append(f"{last}[{k + 1}:v]xfade=transition={trans[k % len(trans)]}:"
+        parts.append(f"{last}[{k + 1}:v]xfade=transition=fade:"
                      f"duration={OVERLAP}:offset={cum:.3f}{out}")
         last = out
     parts.append(f"{last}noise=alls=7:allf=t,vignette=PI/6,format=yuv420p[v]")
