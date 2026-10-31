@@ -23,7 +23,8 @@ CF_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
 HF_MODELS = ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]
 TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]
-STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
+STYLE = ("cinematic documentary still, main subject large and centered in the middle of the frame "
+         "with empty space left and right, dramatic lighting, rich detail, "
          "photorealistic, vertical 9:16 composition, no text, no letters, no words, "
          "no signs, no logos, no captions, no watermark")
 MIN_SCENE, MAX_SCENE = 2.2, 4.6   # fast cuts keep still images feeling alive
@@ -253,8 +254,8 @@ def animate(img, dur, dest, idx, w, h, fps):
     themselves, so nothing important is cropped; tall pictures fill the frame."""
     frames = max(2, int(round(dur * fps)))
     iw, ih = _dims(img)
-    portrait = (iw / ih) < 0.7
-    zmax = 0.07 if not portrait else 0.10
+    portrait = True   # full-frame look (blurred-backdrop layout was rejected)
+    zmax = 0.06       # gentle zoom so the picture is not blown up
     style = idx % 4
     zin = f"min(1.0+{zmax}*on/{frames},{1 + zmax})"
     zout = f"max({1 + zmax}-{zmax}*on/{frames},1.0)"
@@ -267,9 +268,10 @@ def animate(img, dur, dest, idx, w, h, fps):
     else:
         zz, x, y = zin, "iw/2-(iw/zoom/2)", f"(ih-ih/zoom)*(1-on/{frames})"
     if portrait:
-        vf = (f"scale=2*{w}:2*{h}:force_original_aspect_ratio=increase,crop=2*{w}:2*{h},"
+        vf = (f"scale={int(w * 1.5)}:{int(h * 1.5)}:force_original_aspect_ratio=increase:flags=lanczos,"
+              f"crop={int(w * 1.5)}:{int(h * 1.5)},"
               f"zoompan=z='{zz}':x='{x}':y='{y}':d={frames}:s={w}x{h}:fps={fps},"
-              "setsar=1,format=yuv420p")
+              "unsharp=5:5:0.6:5:5:0.0,setsar=1,format=yuv420p")
         fc = None
     else:
         fh = int(round(w * ih / iw / 2)) * 2
