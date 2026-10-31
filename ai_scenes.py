@@ -28,7 +28,14 @@ STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
 MIN_SCENE, MAX_SCENE = 3.0, 7.5
 
 
+_seen = set()
+
+
 def note(msg):
+    key = str(msg)[:28]
+    if key in _seen and "image via" not in str(msg):
+        return  # one annotation per distinct message type (GitHub caps them at 10)
+    _seen.add(key)
     print(f"::warning title=ai_scenes::{str(msg)[:300]}", flush=True)
 
 
@@ -239,6 +246,7 @@ def animate(img, dur, dest, idx, w, h, fps):
 
 
 def build_ai_segments(script, title, words, length, work, w, h, fps):
+    note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
     scenes = plan_scenes(script, words, length)
     note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
