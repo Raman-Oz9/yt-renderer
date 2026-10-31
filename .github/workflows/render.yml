@@ -85,6 +85,20 @@ jobs:
           path: output/video.mp4
           retention-days: 3
 
+      - name: Save test video to test-video branch
+        if: ${{ inputs.publish == false }}
+        run: |
+          cp output/video.mp4 /tmp/test-video.mp4
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan test-video
+          git rm -rq --cached . || true
+          git clean -fdxq -e output || true
+          cp /tmp/test-video.mp4 video.mp4
+          git add video.mp4
+          git commit -q -m "test render [skip ci]"
+          git push -f origin test-video
+
       - name: Publish release
         if: ${{ inputs.publish != false }}
         env:
