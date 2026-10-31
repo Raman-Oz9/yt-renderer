@@ -24,7 +24,8 @@ HF_MODELS = ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]
 TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]
 STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
-         "photorealistic, vertical 9:16 composition, no text, no captions, no watermark")
+         "photorealistic, vertical 9:16 composition, no text, no letters, no words, "
+         "no signs, no logos, no captions, no watermark")
 MIN_SCENE, MAX_SCENE = 3.0, 7.5
 
 
@@ -97,6 +98,19 @@ def plan_scenes(script, words, length):
     return out
 
 
+def parse_json_list(txt):
+    """Tolerant JSON-array parser (handles code fences / surrounding prose)."""
+    txt = txt.strip()
+    try:
+        return json.loads(txt)
+    except Exception:
+        pass
+    m = re.search(r"\[.*\]", txt, re.S)
+    if not m:
+        raise ValueError("no JSON array in reply")
+    return json.loads(m.group(0))
+
+
 def write_prompts(scenes, title):
     """Ask Gemini for one vivid, literal image prompt per scene."""
     fallback = [f"{s['text']}, {STYLE}" for s in scenes]
@@ -124,7 +138,7 @@ def write_prompts(scenes, title):
                 note(f"Prompt writer {model}: {r.status_code} {r.text[:150]}")
                 continue
             txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            arr = json.loads(txt)
+            arr = parse_json_list(txt)
             if isinstance(arr, list) and len(arr) == len(scenes):
                 note(f"Scene prompts written by {model}")
                 return [f"{str(p).strip()}, {STYLE}" for p in arr]
