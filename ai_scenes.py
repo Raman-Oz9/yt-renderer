@@ -122,17 +122,20 @@ def write_prompts(scenes, title):
     listing = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(scenes))
     ask = (
         f"You are the art director of a documentary Short titled \"{title}\".\n"
+        f"The full script, for context: {' '.join(sc['text'] for sc in scenes)[:1800]}\n"
         "For each numbered narration line below write ONE image-generation prompt "
         "that literally shows what that line says (the subject, place, action), as a "
         "single concrete scene a camera could film. No text, no logos, no real "
         "people's faces by name. Keep the same visual look across all scenes. "
-        "AI-ERROR AVOIDANCE (very important, image generators get these wrong): "
-        "never show hands, fingers, close-up faces, people using tools or equipment, "
-        "or crowds. If a person is essential, show them tiny and far away, from behind, "
-        "or as a dark silhouette. Prefer landscapes, objects, creatures, macro shots, "
-        "architecture, space, nature and abstract science visuals. Keep each scene to ONE "
-        "clear subject with a simple composition - no machinery, no devices being operated, "
-        "no complicated mechanisms. "
+        "RELEVANCE RULE (most important): each image must literally and unmistakably show what "
+        "its narration line says - name the exact subject (e.g. 'a bdelloid rotifer, a microscopic "
+        "animal'), place or event, so a viewer could guess the line from the picture alone. If the "
+        "line is abstract (a question, a reflection), show the most concrete visual of the video's own "
+        "subject that fits it. If a line mentions a person or role (a scientist, a king, a diver), SHOW "
+        "that person: medium or wide shot, one person, natural relaxed pose, face turned partly away "
+        "or in profile, hands resting down or out of frame, simple clothing - this avoids the typical "
+        "AI mistakes with fingers and faces. Never show someone operating equipment up close. "
+        "Keep each scene to ONE clear subject and a simple composition. "
         "Max 40 words each. Return ONLY a JSON array of strings, one per line, "
         f"in order, exactly {len(scenes)} items.\n\n{listing}"
     )
@@ -358,7 +361,9 @@ def check_image(img, scene_text):
                f"The image should illustrate: '{scene_text[:200]}'. Look for CLEAR visible mistakes: wrong number "
                "of fingers, malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
                "way, equipment merged with a body or used impossibly, duplicated or melted objects, garbled "
-               "text or letters. Do NOT judge whether it matches the topic, and minor softness is fine. "
+               "text or letters. "
+               "ALSO reject it if it does not clearly and recognisably show the subject of the line. "
+               "Minor softness is fine. "
                'Reply ONLY with JSON: {"ok": true or false, "problem": "short reason"}. '
                "Say ok=false only if a mistake is clearly visible.")
         for model in TEXT_MODELS:
@@ -460,19 +465,24 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     prompts = write_prompts(scenes, title)
     segs, ok = [], 0
     last_img = None
-    redo_left = [max(3, len(scenes) // 3)]   # cap on regenerations per video
+    redo_left = [max(4, len(scenes))]   # cap on regenerations per video
     for i, (sc, pr) in enumerate(zip(scenes, prompts)):
         img = Path(work) / f"ai_{i}.img"
         src = make_image(pr, img)
-        if src and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
+        tries = 0
+        while src and tries < 2 and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
             good, why = check_image(img, sc["text"])
-            if not good:
-                note(f"Scene {i + 1}: flagged ({why}); regenerating")
-                redo_left[0] -= 1
-                img2 = Path(work) / f"ai_{i}b.img"
-                src2 = make_image(pr + ", anatomically correct, simple clean composition", img2)
-                if src2:
-                    img, src = img2, src2
+            if good:
+                break
+            tries += 1
+            redo_left[0] -= 1
+            note(f"Scene {i + 1}: flagged ({why}); regenerating ({tries})")
+            img2 = Path(work) / f"ai_{i}_r{tries}.img"
+            extra = ", anatomically correct, clean simple composition, exactly matching: " + sc["text"][:120]
+            src2 = make_image(pr + extra, img2)
+            if not src2:
+                break
+            img, src = img2, src2
         if src:
             ok += 1
             last_img = img
