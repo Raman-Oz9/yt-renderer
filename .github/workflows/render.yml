@@ -23,6 +23,11 @@ on:
         description: Comma-separated tags
         required: false
         type: string
+      publish:
+        description: Publish a release (this triggers the YouTube upload). Set to false for test renders.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -72,7 +77,16 @@ jobs:
             echo "No changes to commit"
           fi
 
+      - name: Keep test render (no publish)
+        if: ${{ inputs.publish == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-video
+          path: output/video.mp4
+          retention-days: 3
+
       - name: Publish release
+        if: ${{ inputs.publish != false }}
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: ${{ inputs.title }}
