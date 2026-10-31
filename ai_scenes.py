@@ -26,7 +26,8 @@ IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-genera
 STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
          "photorealistic, vertical 9:16 composition, no text, no letters, no words, "
          "no signs, no logos, no captions, no watermark")
-MIN_SCENE, MAX_SCENE = 3.0, 7.5
+MIN_SCENE, MAX_SCENE = 2.2, 4.6   # fast cuts keep still images feeling alive
+OVERLAP = 0.3                      # cross-dissolve length between scenes
 
 
 _seen = set()
@@ -259,6 +260,31 @@ def animate(img, dur, dest, idx, w, h, fps):
                     "-crf", "23", "-pix_fmt", "yuv420p", str(dest)], check=True)
 
 
+def join_with_fades(segs, spans, dest):
+    """Cross-dissolve scenes together, then add light film grain + vignette."""
+    n = len(segs)
+    if n == 1:
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(segs[0]),
+                        "-vf", "noise=alls=7:allf=t,vignette=PI/6,format=yuv420p",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(dest)], check=True)
+        return
+    trans = ["fade", "fade", "smoothleft", "fade", "circlecrop", "fade", "smoothright", "fade"]
+    parts, cum, last = [], 0.0, "[0:v]"
+    for k in range(n - 1):
+        cum += spans[k]
+        out = f"[x{k}]"
+        parts.append(f"{last}[{k + 1}:v]xfade=transition={trans[k % len(trans)]}:"
+                     f"duration={OVERLAP}:offset={cum:.3f}{out}")
+        last = out
+    parts.append(f"{last}noise=alls=7:allf=t,vignette=PI/6,format=yuv420p[v]")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
+    for sg in segs:
+        cmd += ["-i", str(sg)]
+    cmd += ["-filter_complex", ";".join(parts), "-map", "[v]", "-an",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(dest)]
+    subprocess.run(cmd, check=True)
+
+
 def build_ai_segments(script, title, words, length, work, w, h, fps):
     note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
     scenes = plan_scenes(script, words, length)
@@ -280,8 +306,9 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
             note(f"Scene {i + 1}: image failed")
             return None
         seg = Path(work) / f"aiseg_{i}.mp4"
+        span = sc["t1"] - sc["t0"]
         try:
-            animate(img, sc["t1"] - sc["t0"], seg, i, w, h, fps)
+            animate(img, span + (OVERLAP if i < len(scenes) - 1 else 0), seg, i, w, h, fps)
         except subprocess.CalledProcessError as exc:
             note(f"Animate failed scene {i + 1}: {exc}")
             return None
@@ -289,4 +316,18 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     if ok < max(2, int(len(scenes) * 0.6)):
         note(f"Only {ok}/{len(scenes)} images generated, falling back to stock footage")
         return None
-    return segs
+    spans = [sc["t1"] - sc["t0"] for sc in scenes]
+    joined = Path(work) / "ai_joined.mp4"
+    try:
+        join_with_fades(segs, spans, joined)
+        return [joined]
+    except Exception as exc:
+        note(f"Crossfade join failed ({exc}); using hard cuts")
+        cut = []
+        for k, (sg, sp) in enumerate(zip(segs, spans)):
+            out = Path(work) / f"aicut_{k}.mp4"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(sg), "-t", f"{sp:.3f}",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(out)],
+                           check=True)
+            cut.append(out)
+        return cut
