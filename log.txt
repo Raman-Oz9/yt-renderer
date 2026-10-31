@@ -1,0 +1,3 @@
+[ovh 1024x1536/scientist] 400 {"message":"Only 1024x1024 size is currently supported","info":{"invalidParams":[{"name":"size","reason":"only 1024x1024 is supported","value":"1024x1536"}]}}
+[ovh 1024x1536/ruins] 400 {"message":"Only 1024x1024 size is currently supported","info":{"invalidParams":[{"name":"size","reason":"only 1024x1024 is supported","value":"1024x1536"}]}}
+[ovh 1024x1536/ice] 400 {"message":"Only 1024x1024 size is currently supported","info":{"invalidParams":[{"name":"size","reason":"only 1024x1024 is supported","value":"1024x1536"}]}}
