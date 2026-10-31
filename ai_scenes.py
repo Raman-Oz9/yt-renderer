@@ -17,6 +17,8 @@ from pathlib import Path
 import requests
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
+HF_MODELS = ["black-forest-labs/FLUX.1-schnell", "stabilityai/stable-diffusion-xl-base-1.0"]
 TEXT_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"]
 IMAGE_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-preview-image-generation"]
 STYLE = ("cinematic documentary still, dramatic lighting, rich detail, "
@@ -159,9 +161,29 @@ def pollinations_image(prompt, dest):
     return None
 
 
+def hf_image(prompt, dest):
+    """Hugging Face Inference Providers (free allowance with a user token)."""
+    for model in HF_MODELS:
+        try:
+            r = requests.post(
+                f"https://router.huggingface.co/hf-inference/models/{model}",
+                headers={"Authorization": f"Bearer {HF_TOKEN}"},
+                json={"inputs": prompt, "parameters": {"width": 768, "height": 1344}},
+                timeout=180)
+            if r.status_code == 200 and r.headers.get("content-type", "").startswith("image"):
+                Path(dest).write_bytes(r.content)
+                return "huggingface " + model.split("/")[-1]
+            note(f"  hf {model}: {r.status_code} {re.sub(r'\\s+', ' ', r.text)[:160]}")
+        except Exception as exc:
+            note(f"  hf {model} failed: {exc}")
+    return None
+
+
 def make_image(prompt, dest):
     for attempt in range(2):
-        used = (GEMINI_KEY and gemini_image(prompt, dest)) or pollinations_image(prompt, dest)
+        used = ((HF_TOKEN and hf_image(prompt, dest))
+                or (GEMINI_KEY and gemini_image(prompt, dest))
+                or pollinations_image(prompt, dest))
         if used:
             return used
     return None
