@@ -65,6 +65,7 @@ jobs:
         run: python render.py
 
       - name: Save stock-clip usage log
+        if: ${{ inputs.publish != false }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
