@@ -39,7 +39,7 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-MIN_WORDS = int(os.environ.get("MIN_WORDS", "270"))   # ~1:50-2:00 of narration
+MIN_WORDS = int(os.environ.get("MIN_WORDS", "300"))   # ~1:50-2:00 of narration
 
 
 def lengthen_script(script):
@@ -47,7 +47,7 @@ def lengthen_script(script):
     if len(script.split()) >= MIN_WORDS or not GEMINI_KEY:
         return script
     prompt = (
-        "Rewrite this YouTube Shorts narration into a longer, richer version of about 310 words "
+        "Rewrite this YouTube Shorts narration into a longer, richer version of about 345 words "
         "(roughly 1 minute 55 seconds spoken). Keep the first sentence EXACTLY as is. Keep the same topic "
         "and only true, verifiable facts; do not invent numbers, names or quotes. Add more vivid concrete "
         "details, a second surprising reveal in the middle, and context that builds the story. The closing "
@@ -66,7 +66,7 @@ def lengthen_script(script):
             txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
             txt = " ".join(txt.replace('"', "").split())
             n = len(txt.split())
-            if 250 <= n <= 400:
+            if 290 <= n <= 430:
                 print(f"Script lengthened: {len(script.split())} -> {n} words ({model})")
                 return txt
             print(f"::warning title=lengthen::{model} gave {n} words, rejected")
