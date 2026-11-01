@@ -11,5 +11,5 @@ specific = []
 for t in tags:
     if t.lower() not in generic and t.lower() not in [s.lower() for s in specific]:
         specific.append(t)
-final = ["#shorts", "#didyouknow"] + specific[-2:]
+final = specific[-2:]
 print(f"{text} {' '.join(final)}".strip())
