@@ -64,6 +64,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OVH_AI_TOKEN: ${{ secrets.OVH_AI_TOKEN }}
           HORDE_API_KEY: ${{ secrets.HORDE_API_KEY }}
+          SKIP_CLOUDFLARE: ${{ inputs.publish == false && '1' || '0' }}
         run: python render.py
 
       - name: Save stock-clip usage log

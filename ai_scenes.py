@@ -251,6 +251,8 @@ def cf_image(prompt, dest):
 _horde_timeouts = []
 _BUDGET_END = [float("inf")]   # wall-clock cutoff for picture generation
 _dead = set()   # providers that hit a hard limit this run - skip them for the rest
+if os.environ.get("SKIP_CLOUDFLARE") == "1":   # test renders keep Cloudflare's daily allowance for real uploads
+    _dead.add("cf")
 
 
 def ovh_image(prompt, dest):
