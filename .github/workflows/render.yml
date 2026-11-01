@@ -111,7 +111,8 @@ jobs:
           DESCRIPTION: ${{ inputs.description }}
         run: |
           TAG="video-${GITHUB_RUN_ID}"
-          gh release create "$TAG" output/video.mp4 --title "$TITLE" --notes "$DESCRIPTION"
+          NOTES="$(python3 trim_hashtags.py)"
+          gh release create "$TAG" output/video.mp4 --title "$TITLE" --notes "$NOTES"
           # keep only the 20 newest releases
           gh release list --limit 200 --json tagName --jq '.[20:][].tagName' \
             | xargs -r -I{} gh release delete {} --cleanup-tag -y
