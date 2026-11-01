@@ -47,7 +47,7 @@ def lengthen_script(script):
     if len(script.split()) >= MIN_WORDS or not GEMINI_KEY:
         return script
     prompt = (
-        "Rewrite this YouTube Shorts narration into a longer, richer version of about 345 words "
+        "Rewrite this YouTube Shorts narration into a longer, richer version of about 370 words (it MUST be at least 340 words) "
         "(roughly 1 minute 55 seconds spoken). Keep the first sentence EXACTLY as is. Keep the same topic "
         "and only true, verifiable facts; do not invent numbers, names or quotes. Add more vivid concrete "
         "details, a second surprising reveal in the middle, and context that builds the story. The closing "
@@ -55,7 +55,8 @@ def lengthen_script(script):
         "Confident documentary narrator voice, contractions, varied sentence length, short punchy sentences. "
         "Plain text only: one paragraph, no quotes, no stage directions, no emojis, no hashtags.\n\nSCRIPT:\n"
         + script)
-    for model in ("gemini-3.5-flash-lite", "gemini-2.5-flash"):
+    best = None
+    for model in ("gemini-3.5-flash-lite",) * 3:   # up to 3 attempts, keep the longest usable one
         try:
             r = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -66,12 +67,17 @@ def lengthen_script(script):
             txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
             txt = " ".join(txt.replace('"', "").split())
             n = len(txt.split())
-            if 290 <= n <= 430:
-                print(f"Script lengthened: {len(script.split())} -> {n} words ({model})")
-                return txt
-            print(f"::warning title=lengthen::{model} gave {n} words, rejected")
+            print(f"lengthen attempt: {n} words")
+            if 250 <= n <= 450 and (best is None or n > len(best.split())):
+                best = txt
+            if best and len(best.split()) >= 320:
+                break
         except Exception as e:
             print(f"::warning title=lengthen::{model} failed: {e}")
+    if best:
+        print(f"::warning title=lengthen::script {len(script.split())} -> {len(best.split())} words")
+        return best
+    print("::warning title=lengthen::no usable longer script, using the original")
     return script
 
 
