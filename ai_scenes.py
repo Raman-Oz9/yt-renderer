@@ -250,6 +250,7 @@ def cf_image(prompt, dest):
 
 _horde_timeouts = []
 _BUDGET_END = [float("inf")]   # wall-clock cutoff for picture generation
+_ovh_last = [0.0]
 _dead = set()   # providers that hit a hard limit this run - skip them for the rest
 if os.environ.get("SKIP_CLOUDFLARE") == "1":   # test renders keep Cloudflare's daily allowance for real uploads
     _dead.add("cf")
@@ -265,24 +266,31 @@ def ovh_image(prompt, dest):
     body = {"prompt": prompt[:1400] + ", 85mm lens, ultra sharp focus, intricate details",
             "negative_prompt": ("text, letters, watermark, logo, blurry, soft, deformed, distorted, "
                                 "disfigured, extra limbs, low quality, oversaturated, cartoon")}
-    for attempt in range(2):
+    fails = 0
+    for attempt in range(8):                      # patient: wait out the 2-per-minute limit
+        if time.time() > _BUDGET_END[0]:
+            return None
+        gap = 32 - (time.time() - _ovh_last[0])   # stay under the anonymous rate limit
+        if gap > 0:
+            time.sleep(gap)
         try:
-            r = requests.post(url, headers=hdr, json=body, timeout=120)
+            _ovh_last[0] = time.time()
+            r = requests.post(url, headers=hdr, json=body, timeout=150)
+            _ovh_last[0] = time.time()
             if r.status_code == 200 and len(r.content) > 5000:
                 Path(dest).write_bytes(r.content)
                 return "ovh sdxl"
-            if r.status_code == 429:
-                if attempt == 0:
-                    time.sleep(35)   # anonymous limit is 2 requests per minute
-                    continue
-                _dead.add("ovh")     # still limited: stop wasting time on it
-            note(f"  ovh: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:150]}")
             if r.status_code in (401, 403):
+                note(f"  ovh: {r.status_code} blocked")
                 _dead.add("ovh")
-            break
+                return None
+            fails += 1
+            note(f"  ovh: {r.status_code} retrying ({fails})")
+            time.sleep(15 if r.status_code != 429 else 20)
         except Exception as exc:
-            note(f"  ovh failed: {exc}")
-            break
+            fails += 1
+            note(f"  ovh failed: {exc}; retrying ({fails})")
+            time.sleep(10)
     return None
 
 
@@ -467,7 +475,7 @@ def join_with_fades(segs, spans, dest):
 
 def build_ai_segments(script, title, words, length, work, w, h, fps):
     note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
-    _BUDGET_END[0] = time.time() + 14 * 60
+    _BUDGET_END[0] = time.time() + 34 * 60
     scenes = plan_scenes(script, words, length)
     note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
