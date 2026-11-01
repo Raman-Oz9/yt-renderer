@@ -51,6 +51,9 @@ def split_sentences(text):
 
 def plan_scenes(script, words, length):
     """Group sentences into scenes of ~3-7.5s with start/end times."""
+    global MIN_SCENE, MAX_SCENE
+    if length > 80:  # long video: fewer, slightly longer scenes to stay inside the daily image allowance
+        MIN_SCENE, MAX_SCENE = 3.0, 5.5
     sents = split_sentences(script)
     n_words = len(script.split())
     counts = [max(1, len(s.split())) for s in sents]

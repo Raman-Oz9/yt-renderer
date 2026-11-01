@@ -39,6 +39,44 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
+MIN_WORDS = int(os.environ.get("MIN_WORDS", "270"))   # ~1:50-2:00 of narration
+
+
+def lengthen_script(script):
+    """Make-generated scripts are ~45s. Ask Gemini to rewrite to ~2 minutes (300-320 words)."""
+    if len(script.split()) >= MIN_WORDS or not GEMINI_KEY:
+        return script
+    prompt = (
+        "Rewrite this YouTube Shorts narration into a longer, richer version of about 310 words "
+        "(roughly 1 minute 55 seconds spoken). Keep the first sentence EXACTLY as is. Keep the same topic "
+        "and only true, verifiable facts; do not invent numbers, names or quotes. Add more vivid concrete "
+        "details, a second surprising reveal in the middle, and context that builds the story. The closing "
+        "must add a NEW final thought (not repeat the hook) and end with a short question to the viewer. "
+        "Confident documentary narrator voice, contractions, varied sentence length, short punchy sentences. "
+        "Plain text only: one paragraph, no quotes, no stage directions, no emojis, no hashtags.\n\nSCRIPT:\n"
+        + script)
+    for model in ("gemini-3.5-flash-lite", "gemini-2.5-flash"):
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": GEMINI_KEY},
+                json={"contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"maxOutputTokens": 2048}}, timeout=90)
+            r.raise_for_status()
+            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            txt = " ".join(txt.replace('"', "").split())
+            n = len(txt.split())
+            if 250 <= n <= 400:
+                print(f"Script lengthened: {len(script.split())} -> {n} words ({model})")
+                return txt
+            print(f"::warning title=lengthen::{model} gave {n} words, rejected")
+        except Exception as e:
+            print(f"::warning title=lengthen::{model} failed: {e}")
+    return script
+
+
+SCRIPT = lengthen_script(SCRIPT)
+
 GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
 GEMINI_VOICE = os.environ.get("GEMINI_VOICE", "Orus")  # deep, firm male narrator voice
 EDGE_VOICES = ["en-US-GuyNeural", "en-US-AndrewMultilingualNeural"]  # fallback, male first
