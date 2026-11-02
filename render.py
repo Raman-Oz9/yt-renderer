@@ -44,7 +44,7 @@ MIN_WORDS = int(os.environ.get("MIN_WORDS", "300"))   # ~1:50-2:00 of narration
 
 def lengthen_script(script):
     """Make-generated scripts are ~45s. Ask Gemini to rewrite to ~2 minutes (300-320 words)."""
-    if len(script.split()) >= MIN_WORDS or not GEMINI_KEY:
+    if os.environ.get("LENGTHEN", "1") == "0" or len(script.split()) >= MIN_WORDS or not GEMINI_KEY:
         return script
     prompt = (
         "Rewrite this YouTube Shorts narration into a longer, richer version of about 370 words (it MUST be at least 340 words) "
