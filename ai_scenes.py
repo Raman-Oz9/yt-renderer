@@ -134,13 +134,7 @@ def write_prompts(scenes, title):
         "its narration line says - name the exact subject (e.g. 'a bdelloid rotifer, a microscopic "
         "animal'), place or event, so a viewer could guess the line from the picture alone. If the "
         "line is abstract (a question, a reflection), show the most concrete visual of the video's own "
-        "subject that fits it. If a line mentions a person or role (a scientist, a king, a diver), SHOW "
-        "that person: EXACTLY ONE person (never a group, even if the line says several - show one), "
-        "medium or wide shot, face in profile or turned partly away, and HANDS NOT VISIBLE: write "
-        "phrases like 'waist-up portrait, arms down out of frame, hands hidden behind a desk' in the "
-        "prompt so no fingers appear - image generators draw fingers wrongly. Never show someone "
-        "operating equipment or holding objects. "
-        "Keep each scene to ONE clear subject and a simple composition. "
+        "subject that fits it. PEOPLE RULE (critical, image generators draw people badly): prefer places, objects, maps, machines, ships, buildings, nature and symbols over people. Never show a close-up person, never a visible face, never hands or fingers, never anything worn or held by a body (no stethoscope, tools, headsets, weapons, equipment). If a line is about a person or a role (a doctor, a pilot, a scientist), show the place or object instead (an empty hospital corridor, a stethoscope lying on a desk, a cockpit seen from the back, a laboratory bench). Only if a person is truly essential, show exactly ONE person as a tiny distant silhouette in a wide shot, or seen from far behind, with the face and hands not visible. Keep each scene to ONE clear subject and a simple composition. "
         "Max 40 words each. Return ONLY a JSON array of strings, one per line, "
         f"in order, exactly {len(scenes)} items.\n\n{listing}"
     )
@@ -378,6 +372,10 @@ def check_image(img, scene_text):
                "or any blobby, fused, gloved-blob or blurry hand, is a mistake), malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
                "way, equipment merged with a body or used impossibly, duplicated or melted objects, garbled "
                "text or letters. "
+               "If any person is visible, check them like a portrait retoucher: face symmetrical and natural, "
+               "eyes and mouth correctly placed, normal body proportions, neck and limbs joined correctly, "
+               "clothing and anything worn (a stethoscope, headset, bag) sitting correctly on the body - anything "
+               "odd, uncanny, melted or misplaced on a person is a mistake. "
                "ALSO reject it if it does not clearly and recognisably show the subject of the line. "
                "Minor softness is fine. "
                'Reply ONLY with JSON: {"ok": true or false, "problem": "short reason"}. '
@@ -486,10 +484,12 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
         img = Path(work) / f"ai_{i}.img"
         src = make_image(pr, img)
         tries = 0
+        flagged = False
         while src and tries < 2 and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
             good, why = check_image(img, sc["text"])
             if good:
                 break
+            flagged = True
             tries += 1
             redo_left[0] -= 1
             note(f"Scene {i + 1}: flagged ({why}); regenerating ({tries})")
@@ -499,6 +499,16 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
             if not src2:
                 break
             img, src = img2, src2
+        if src and flagged and time.time() < _BUDGET_END[0]:
+            good, why = check_image(img, sc["text"])
+            if not good:      # still wrong after retries: use a version with no people at all
+                note(f"Scene {i + 1}: still flagged ({why}); using a no-people version")
+                img3 = Path(work) / f"ai_{i}_safe.img"
+                safe = (f"{sc['text'][:160]}, shown with no people at all: only the place, objects, machines "
+                        f"or landscape, no humans, no faces, no hands, {STYLE}")
+                src3 = make_image(safe, img3)
+                if src3:
+                    img, src = img3, src3
         if src:
             ok += 1
             last_img = img
