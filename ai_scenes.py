@@ -134,7 +134,7 @@ def write_prompts(scenes, title):
         "its narration line says - name the exact subject (e.g. 'a bdelloid rotifer, a microscopic "
         "animal'), place or event, so a viewer could guess the line from the picture alone. If the "
         "line is abstract (a question, a reflection), show the most concrete visual of the video's own "
-        "subject that fits it. PEOPLE RULE: when a line is about a person or a role, or a human face would make the scene more engaging for viewers, SHOW A REAL-LOOKING PERSON, but in the way image generators draw best: EXACTLY ONE person (never a crowd or a group), a medium shot from the waist up or a wide shot, standing or sitting in a simple relaxed pose, face turned three-quarters or in profile with a calm natural expression, and HANDS OUT OF FRAME (hands in pockets, behind the back, or below the bottom edge of the picture). Dress them in plain simple clothing and give them no worn or held items at all (no stethoscope, headset, tools, phones, weapons, bags, glasses, jewellery). Write the prompt like a real photograph: 'candid documentary photograph of a [age] [role], natural skin texture, correct human anatomy and proportions, natural symmetrical face, shot on an 85mm lens'. Use a person in at most about one scene in three; otherwise show places, objects, maps, machines, ships, buildings or nature. Keep each scene to ONE clear subject and a simple composition. "
+        "subject that fits it. PEOPLE RULE: when a line is about a person or a role, or a human face would make the scene more engaging for viewers, SHOW A REAL-LOOKING PERSON, but in the way image generators draw best: EXACTLY ONE person (never a crowd or a group), a medium shot from the waist up or a wide shot, standing or sitting in a simple relaxed pose, face turned three-quarters or in profile with a calm natural expression, and HANDS OUT OF FRAME (hands in pockets, behind the back, or below the bottom edge of the picture). Dress them in plain simple clothing and give them no worn or held items at all (no stethoscope, headset, tools, phones, weapons, bags, glasses, jewellery). Write the prompt like a real photograph: 'candid documentary photograph of a [age] [role], natural skin texture, correct human anatomy and proportions, natural symmetrical face, shot on an 85mm lens'. Never depict a named real person (a politician, a leader, a celebrity): show a podium, a flag, a building or an empty table instead. Use a person in at most about one scene in three; otherwise show places, objects, maps, machines, ships, buildings or nature. Keep each scene to ONE clear subject and a simple composition. "
         "Max 40 words each. Return ONLY a JSON array of strings, one per line, "
         f"in order, exactly {len(scenes)} items.\n\n{listing}"
     )
@@ -333,16 +333,46 @@ def horde_image(prompt, dest):
     return None
 
 
+
+_PERSON_RE = re.compile(r"\b(person|people|man|men|woman|women|soldier|soldiers|doctor|nurse|scientist|"
+                        r"officer|pilot|crowd|figure|silhouette|worker|workers|child|boy|girl|portrait|face|"
+                        r"sailor|diplomat|president|leader|team|staff|surgeon|patient|king|queen|baker|farmer)\b", re.I)
+_NO_PEOPLE_RE = re.compile(r"\b(no|without)\s+(people|humans|faces|hands|persons|person|human)\b", re.I)
+
+
+def has_person(prompt):
+    return bool(_PERSON_RE.search(_NO_PEOPLE_RE.sub("", prompt)))
+
+
+def no_people_prompt(scene_text):
+    return (f"{scene_text[:160]}, shown with no people at all: only the place, objects, machines or "
+            f"landscape, no humans, no faces, no hands, {STYLE}")
+
+
+def gen_image(prompt, scene_text, dest):
+    """People are only drawn by the best generator (Cloudflare); everywhere else a no-people version is used."""
+    src = make_image(prompt, dest)
+    if not src and has_person(prompt):
+        note("  people scene: best generator unavailable, using a no-people version")
+        src = make_image(no_people_prompt(scene_text), dest)
+    return src
+
+
 def make_image(prompt, dest):
     """Free providers in order; a provider that hits its daily cap is skipped
     for the rest of the run so we don't waste time on it."""
     if time.time() > _BUDGET_END[0]:
         return None
+    person = has_person(prompt)
     for attempt in range(2):
+        if person and ("cf" in _dead or not (CF_ACCOUNT and CF_TOKEN)):
+            return None
         if CF_ACCOUNT and CF_TOKEN and "cf" not in _dead:
             used = cf_image(prompt, dest)
             if used:
                 return used
+        if person:
+            continue
         if "ovh" not in _dead:
             used = ovh_image(prompt, dest)
             if used:
@@ -369,7 +399,7 @@ def check_image(img, scene_text):
         ask = ("You are a strict quality inspector for AI-generated images used in a documentary video. "
                f"The image should illustrate: '{scene_text[:200]}'. Look for CLEAR visible mistakes: wrong number "
                "of fingers (COUNT the fingers on every visible hand: anything other than five clean, natural fingers, "
-               "or any blobby, fused, gloved-blob or blurry hand, is a mistake), malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
+               "or any blobby, fused, gloved-blob or blurry hand, is a mistake), more than one person in the picture, waxy or plastic-looking skin, blurry or distorted faces, malformed hands or faces, extra or missing limbs, eyes or objects pointing the wrong "
                "way, equipment merged with a body or used impossibly, duplicated or melted objects, garbled "
                "text or letters. "
                "If any person is visible, check them like a portrait retoucher: face symmetrical and natural, "
@@ -482,7 +512,7 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     redo_left = [max(4, len(scenes))]   # cap on regenerations per video
     for i, (sc, pr) in enumerate(zip(scenes, prompts)):
         img = Path(work) / f"ai_{i}.img"
-        src = make_image(pr, img)
+        src = gen_image(pr, sc["text"], img)
         tries = 0
         flagged = False
         while src and tries < 2 and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
@@ -495,7 +525,7 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
             note(f"Scene {i + 1}: flagged ({why}); regenerating ({tries})")
             img2 = Path(work) / f"ai_{i}_r{tries}.img"
             extra = ", anatomically correct, clean simple composition, exactly matching: " + sc["text"][:120]
-            src2 = make_image(pr + extra, img2)
+            src2 = gen_image(pr + extra, sc["text"], img2)
             if not src2:
                 break
             img, src = img2, src2
