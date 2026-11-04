@@ -349,6 +349,20 @@ def no_people_prompt(scene_text):
             f"landscape, no humans, no faces, no hands, {STYLE}")
 
 
+_PERSON_LADDER = [
+    "one person seen from behind or over the shoulder, face not visible, hands out of frame, plain clothing",
+    "wide cinematic shot with one small distant person far from the camera, no facial detail, hands not visible",
+    "one person as a dark backlit silhouette against the scene, no facial detail, no hands visible",
+]
+
+
+def person_variant(scene_text, k):
+    """Progressively safer ways to keep a human in the scene when the first picture was flawed."""
+    how = _PERSON_LADDER[min(k, len(_PERSON_LADDER)) - 1]
+    return (f"{scene_text[:150]}, candid documentary photograph, {how}, natural proportions, "
+            f"correct anatomy, {STYLE}")
+
+
 def gen_image(prompt, scene_text, dest):
     """People are only drawn by the best generator (Cloudflare); everywhere else a no-people version is used."""
     src = make_image(prompt, dest)
@@ -509,13 +523,13 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     prompts = write_prompts(scenes, title)
     segs, ok = [], 0
     last_img = None
-    redo_left = [max(4, len(scenes))]   # cap on regenerations per video
+    redo_left = [max(8, int(len(scenes) * 1.3))]   # cap on regenerations per video
     for i, (sc, pr) in enumerate(zip(scenes, prompts)):
         img = Path(work) / f"ai_{i}.img"
         src = gen_image(pr, sc["text"], img)
         tries = 0
         flagged = False
-        while src and tries < 2 and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
+        while src and tries < (3 if has_person(pr) else 2) and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
             good, why = check_image(img, sc["text"])
             if good:
                 break
@@ -524,8 +538,12 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
             redo_left[0] -= 1
             note(f"Scene {i + 1}: flagged ({why}); regenerating ({tries})")
             img2 = Path(work) / f"ai_{i}_r{tries}.img"
-            extra = ", anatomically correct, clean simple composition, exactly matching: " + sc["text"][:120]
-            src2 = gen_image(pr + extra, sc["text"], img2)
+            if has_person(pr):
+                # keep the human, but show them in a way generators draw reliably
+                retry_pr = person_variant(sc["text"], tries)
+            else:
+                retry_pr = pr + ", anatomically correct, clean simple composition, exactly matching: " + sc["text"][:120]
+            src2 = gen_image(retry_pr, sc["text"], img2)
             if not src2:
                 break
             img, src = img2, src2
