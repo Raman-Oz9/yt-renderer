@@ -97,6 +97,8 @@ jobs:
 
       - name: Save test video to test-video branch
         if: ${{ inputs.publish == false }}
+        env:
+          TITLE: ${{ inputs.title }}
         run: |
           cp output/video.mp4 /tmp/test-video.mp4
           git config user.name "github-actions[bot]"
@@ -106,7 +108,7 @@ jobs:
           git clean -fdxq -e output || true
           cp /tmp/test-video.mp4 video.mp4
           git add video.mp4
-          git commit -q -m "test render [skip ci]"
+          git commit -q -m "test render: $TITLE [skip ci]"
           git push -f origin test-video
 
       - name: Publish release
