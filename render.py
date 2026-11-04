@@ -39,7 +39,7 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-MIN_WORDS = int(os.environ.get("MIN_WORDS", "190"))   # ~1:50-2:00 of narration
+MIN_WORDS = int(os.environ.get("MIN_WORDS", "190"))   # ~80-95 s of narration
 
 
 def lengthen_script(script):
@@ -68,7 +68,7 @@ def lengthen_script(script):
             txt = " ".join(txt.replace('"', "").split())
             n = len(txt.split())
             print(f"lengthen attempt: {n} words")
-            if 190 <= n <= 330 and (best is None or n > len(best.split())):
+            if 190 <= n <= 265 and (best is None or n > len(best.split())):
                 best = txt
             if best and len(best.split()) >= 205:
                 break
