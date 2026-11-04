@@ -365,6 +365,9 @@ def person_variant(scene_text, k):
 
 def gen_image(prompt, scene_text, dest):
     """People are only drawn by the best generator (Cloudflare); everywhere else a no-people version is used."""
+    if has_person(prompt) and ("cf" in _dead or not (CF_ACCOUNT and CF_TOKEN)):
+        # Cloudflare unavailable (tests, or its daily cap is spent): start from the safer human framing on OVH
+        prompt = person_variant(scene_text, 1)
     src = make_image(prompt, dest)
     if not src and has_person(prompt):
         note("  people scene: best generator unavailable, using a no-people version")
@@ -379,13 +382,16 @@ def make_image(prompt, dest):
         return None
     person = has_person(prompt)
     for attempt in range(2):
-        if person and ("cf" in _dead or not (CF_ACCOUNT and CF_TOKEN)):
-            return None
         if CF_ACCOUNT and CF_TOKEN and "cf" not in _dead:
             used = cf_image(prompt, dest)
             if used:
                 return used
         if person:
+            # people only come from the two better generators: Cloudflare, then OVH (never Horde/Pollinations)
+            if "ovh" not in _dead:
+                used = ovh_image(prompt, dest)
+                if used:
+                    return used
             continue
         if "ovh" not in _dead:
             used = ovh_image(prompt, dest)
