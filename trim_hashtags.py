@@ -2,6 +2,9 @@
 plus up to 2 topic-specific ones from the generated list."""
 import os, re, sys
 d = os.environ.get("DESCRIPTION", "")
+if os.environ.get("TRIM_HASHTAGS", "0") != "1":   # restored: keep every hashtag the script writer produced
+    print(d)
+    sys.exit(0)
 tags = re.findall(r"#\w+", d)
 text = re.sub(r"\s*#\w+", "", d).strip()
 generic = {"#fyp", "#viral", "#explore", "#trending", "#foryou", "#foryoupage", "#shorts", "#facts",

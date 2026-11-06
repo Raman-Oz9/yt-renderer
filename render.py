@@ -39,7 +39,7 @@ PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()  # optional - second free stock source
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-MIN_WORDS = int(os.environ.get("MIN_WORDS", "190"))   # ~80-95 s of narration
+MIN_WORDS = int(os.environ.get("MIN_WORDS", "0"))   # 0 = no lengthening (restored original behaviour); set e.g. 190 to re-enable
 
 
 def lengthen_script(script):
