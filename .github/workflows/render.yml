@@ -120,11 +120,7 @@ jobs:
         run: |
           TAG="video-${GITHUB_RUN_ID}"
           NOTES="$(python3 trim_hashtags.py)"
-          # name the file after the video (keyword slug) instead of plain video.mp4
-          SLUG="$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-70 | sed -E 's/-+$//')"
-          [ -z "$SLUG" ] && SLUG="video"
-          cp output/video.mp4 "output/${SLUG}.mp4"
-          gh release create "$TAG" "output/${SLUG}.mp4" --title "$TITLE" --notes "$NOTES"
+          gh release create "$TAG" output/video.mp4 --title "$TITLE" --notes "$NOTES"
           # keep only the 20 newest releases
           gh release list --limit 200 --json tagName --jq '.[20:][].tagName' \
             | xargs -r -I{} gh release delete {} --cleanup-tag -y
