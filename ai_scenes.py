@@ -527,6 +527,9 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
     scenes = plan_scenes(script, words, length)
     note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
+    # a person is drawn only when that scene's own narration is about a person or role; otherwise force a no-people picture
+    prompts = [no_people_prompt(f"{title}. {sc['text']}") if (has_person(pr) and not has_person(sc['text'])) else pr
+               for sc, pr in zip(scenes, prompts)]
     segs, ok = [], 0
     last_img = None
     redo_left = [max(8, int(len(scenes) * 1.3))]   # cap on regenerations per video

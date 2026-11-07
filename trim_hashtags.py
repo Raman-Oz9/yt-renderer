@@ -2,6 +2,7 @@
 plus up to 2 topic-specific ones from the generated list."""
 import os, re, sys
 d = os.environ.get("DESCRIPTION", "")
+d = re.sub(r"\s*#didyouknow\b", "", d, flags=re.I).strip()   # this hashtag is no longer wanted
 if os.environ.get("TRIM_HASHTAGS", "0") != "1":   # restored: keep every hashtag the script writer produced
     print(d)
     sys.exit(0)
