@@ -55,6 +55,7 @@ jobs:
           pip install edge-tts requests soundfile numpy
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install kokoro huggingface_hub pillow
+          for i in 1 2 3 4 5; do pip install "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" && break; echo "spacy model download failed, retry $i"; sleep 20; done
 
       - name: Render video
         env:
