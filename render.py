@@ -94,11 +94,16 @@ MAX_SECONDS = 170       # extended Shorts allow up to 3 min; stay comfortably un
 SEGMENT_SECONDS = 8      # max length taken from each stock clip
 MAX_SEGMENTS = 30        # safety cap on number of clips stitched together
 W, H, FPS = 1080, 1920, 30
+if os.environ.get("ASPECT", "vertical").strip().lower() == "landscape":   # long-form 16:9 (opt-in; default unchanged)
+    W, H = 1920, 1080
+    MAX_SECONDS = 1500
 VIDEO_CRF = 22
 VIDEO_MAXRATE_KBPS = 6000
 AUDIO_KBPS = 128
 CAPTION_FONT_SIZE = 54
 CAPTION_MARGIN_V = 430   # distance from the bottom edge
+if W > H:
+    CAPTION_FONT_SIZE, CAPTION_MARGIN_V = 62, 48
 MUSIC_DIR = Path(".")    # music tracks live in the repo root alongside this script
 MUSIC_VOLUME = 0.20      # back down from 0.30
 MUSIC_START_OFFSET = 20  # skip the first 20s of the track (skip past quiet intros)

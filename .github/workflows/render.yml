@@ -33,6 +33,11 @@ on:
         required: false
         default: cinematic
         type: string
+      aspect:
+        description: "vertical (default, Shorts) or landscape (16:9 long video)"
+        required: false
+        default: vertical
+        type: string
       lengthen:
         description: Let Gemini rewrite the script longer (false for news/fact-bound scripts)
         required: false
@@ -45,7 +50,7 @@ permissions:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -76,6 +81,7 @@ jobs:
           OVH_AI_TOKEN: ${{ secrets.OVH_AI_TOKEN }}
           HORDE_API_KEY: ${{ secrets.HORDE_API_KEY }}
           VISUAL_STYLE: ${{ inputs.visual_style }}
+          ASPECT: ${{ inputs.aspect }}
           LENGTHEN: ${{ inputs.lengthen == false && '0' || '1' }}
           SKIP_CLOUDFLARE: ${{ inputs.publish == false && '1' || '0' }}
         run: python render.py
