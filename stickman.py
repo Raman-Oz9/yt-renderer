@@ -1,10 +1,9 @@
-"""Stick-figure explainer renderer v2 (only used when VISUAL_STYLE=stickman).
+"""Stick-figure storytelling renderer v4 (only used when VISUAL_STYLE=stickman).
 
-Layouts adapt to the frame: vertical 9:16 (Shorts) or landscape 16:9 (long videos).
-Every scene = tinted paper + big headline + a LARGE framed illustration card with a slow
-camera push + a stick figure (drawn in code) acting beside / on the card + small effects
-(burst lines, sparkles, question mark). Scenes are joined with varied transitions.
-The cinematic renderer never imports this module.
+Full-bleed illustration fills the whole frame (vertical 9:16 for Shorts, 16:9 for long videos) with a
+lively camera move; a stick-figure presenter with hair, glasses and a blazer acts on top of it; bold
+headline on a soft gradient. Scenes are joined with varied transitions. The cinematic renderer never
+imports this module.
 """
 import math
 import re
@@ -20,23 +19,16 @@ import ai_scenes as A
 
 INK = (18, 18, 22)
 YELLOW = (255, 210, 63)
-CORAL = (255, 94, 91)
 WHITE = (255, 255, 255)
-import os
-THEME = os.environ.get("STICK_THEME", "paper").strip().lower()   # paper (default, the look you liked) | light | dark
-LIGHT = THEME != "dark"
-PAPER = THEME == "paper"
-if LIGHT:   # clean light paper (no grid, no grain), ink figure, bold marker accents
-    ACCENTS = [(226, 70, 56), (38, 150, 96), (36, 98, 190), (240, 150, 20), (150, 80, 190)]
-    BGS = [(252, 249, 242), (246, 250, 252), (253, 245, 241), (247, 251, 244), (251, 247, 253)]
-    TXT = INK
-else:       # deep dark backgrounds, yellow signature accent
-    ACCENTS = [YELLOW, CORAL, YELLOW, (70, 205, 235)]
-    BGS = [(14, 18, 30), (24, 14, 34), (10, 28, 36), (30, 18, 20)]
-    TXT = WHITE
+HAIR = (58, 36, 26)
+BLAZER = (36, 56, 104)
+PANTS = (50, 58, 84)
+SHOE = (28, 28, 34)
+TIE = (214, 60, 56)
+ACCENTS = [YELLOW, (255, 120, 96), YELLOW, (110, 220, 255)]   # effect / keyword colours
 FONTS = [str(Path(__file__).with_name("fonts") / "Anton.ttf"),
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
-TRANSITIONS = ["slideleft", "wipeleft", "circleopen", "smoothleft", "zoomin", "slideup"]
+TRANSITIONS = ["slideleft", "wipeleft", "circleopen", "smoothleft", "zoomin", "slideup", "fadewhite"]
 CHUNK = 10   # scenes per xfade chain (keeps ffmpeg light on long videos)
 
 # angles in degrees from straight-down, + = toward screen right
@@ -77,9 +69,10 @@ def _mix(a, b, t):
     return {k: a[k] + (b[k] - a[k]) * t for k in a}
 
 
-# ----------------------------------------------------------------------------- figure
+# ----------------------------------------------------------------------------- the presenter
 def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
-    """RGBA figure whose total height is ~height_px. Returns (img, feet_y_in_img)."""
+    """RGBA stick-figure presenter (hair, glasses, blazer, tie, trousers, shoes) ~height_px tall.
+    Returns (img, feet_y_in_img)."""
     scale = height_px / 388.0
     S = 2
     side = int(520 * scale)
@@ -88,6 +81,7 @@ def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     lw = max(4, int(9 * u))
+    ol = max(2, int(3.2 * u))                     # outline thickness for filled clothing
     bob = math.sin(phase * 2 * math.pi) * 5 * u
     hip = (W / 2, 300 * u + bob)
     lean = math.radians(pose["lean"])
@@ -98,64 +92,107 @@ def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
         m = (p[0] + math.sin(r1) * l1, p[1] + math.cos(r1) * l1)
         return m, (m[0] + math.sin(r2) * l2, m[1] + math.cos(r2) * l2)
 
+    def thick(pts, width, fill):
+        """Clothing-coloured limb with an ink outline."""
+        d.line(pts, fill=INK, width=width + 2 * ol, joint="curve")
+        for p in pts:
+            d.ellipse([p[0] - width / 2 - ol, p[1] - width / 2 - ol, p[0] + width / 2 + ol, p[1] + width / 2 + ol], fill=INK)
+        d.line(pts, fill=fill, width=width, joint="curve")
+        for p in pts:
+            d.ellipse([p[0] - width / 2, p[1] - width / 2, p[0] + width / 2, p[1] + width / 2], fill=fill)
+
+    # legs (trousers) + shoes
     for a1, a2 in ((pose["ll1"], pose["ll2"]), (pose["rl1"], pose["rl2"])):
         m, e = limb(hip, a1, a2, 85 * u, 85 * u)
-        d.line([hip, m, e], fill=INK, width=lw, joint="curve")
-        d.ellipse([e[0] - lw * .6, e[1] - lw * .6, e[0] + lw * .6, e[1] + lw * .6], fill=INK)
+        thick([hip, m, e], int(lw * 1.5), PANTS)
+        d.ellipse([e[0] - lw * 0.9, e[1] - lw * 0.5, e[0] + lw * 1.9, e[1] + lw * 0.9], fill=SHOE, outline=INK, width=ol)
+    # torso: blazer, white shirt V and tie
+    sl = (neck[0] - 30 * u, neck[1] + 12 * u)
+    sr = (neck[0] + 30 * u, neck[1] + 12 * u)
+    hl = (hip[0] - 21 * u, hip[1] + 4 * u)
+    hr_ = (hip[0] + 21 * u, hip[1] + 4 * u)
+    d.polygon([sl, sr, hr_, hl], fill=BLAZER, outline=INK, width=ol)
+    d.polygon([(neck[0] - 13 * u, neck[1] + 12 * u), (neck[0] + 13 * u, neck[1] + 12 * u),
+               (neck[0] + 2 * u * 0, neck[1] + 62 * u)], fill=WHITE)
+    cx0, cy0 = neck[0], neck[1] + 20 * u
+    d.polygon([(cx0 - 6 * u, cy0), (cx0 + 6 * u, cy0), (cx0 + 9 * u, cy0 + 36 * u), (cx0, cy0 + 48 * u),
+               (cx0 - 9 * u, cy0 + 36 * u)], fill=TIE, outline=INK, width=max(1, ol // 2))
+    # arms (blazer sleeves) + hands
     for a1, a2 in ((pose["la1"], pose["la2"]), (pose["ra1"], pose["ra2"])):
-        sh = (neck[0], neck[1] + 14 * u)
-        m, e = limb(sh, a1, a2, 70 * u, 70 * u)
-        d.line([sh, m, e], fill=INK, width=lw, joint="curve")
-        d.ellipse([e[0] - lw * .9, e[1] - lw * .9, e[0] + lw * .9, e[1] + lw * .9], fill=INK)
-    d.line([hip, neck], fill=INK, width=lw)
+        sh = (neck[0] + (-26 * u if a1 < 0 or (a1 == 0) else 26 * u), neck[1] + 18 * u)
+        m, e = limb(sh, a1, a2, 68 * u, 62 * u)
+        thick([sh, m, e], int(lw * 1.45), BLAZER)
+        r = lw * 1.05
+        d.ellipse([e[0] - r, e[1] - r, e[0] + r, e[1] + r], fill=WHITE, outline=INK, width=ol)
+    # head
     hr = 46 * u
     hc = (neck[0] + math.sin(math.radians(pose["head"])) * 20 * u, neck[1] - hr - 6 * u)
-    d.ellipse([hc[0] - hr, hc[1] - hr, hc[0] + hr, hc[1] + hr], fill=(255, 255, 255, 255), outline=INK, width=lw)
-    ex, ey = hr * 0.38, hc[1] - hr * 0.12
-    er = max(3, int(6 * u)) if mood != 2 else int(9 * u)
+    d.line([neck, (hc[0], hc[1] + hr * 0.9)], fill=INK, width=lw)
+    # hair (behind the face outline): quiff + side
+    d.pieslice([hc[0] - hr * 1.04, hc[1] - hr * 1.04, hc[0] + hr * 1.04, hc[1] + hr * 1.04], 188, 352, fill=HAIR, outline=INK, width=ol)
+    d.polygon([(hc[0] - hr * 0.95, hc[1] - hr * 0.35), (hc[0] - hr * 0.5, hc[1] - hr * 1.2), (hc[0] + hr * 0.3, hc[1] - hr * 1.38), (hc[0] + hr * 1.05, hc[1] - hr * 0.95), (hc[0] + hr * 0.9, hc[1] - hr * 0.45), (hc[0] + hr * 0.1, hc[1] - hr * 0.8)], fill=HAIR, outline=INK, width=ol)
+    d.pieslice([hc[0] - hr * 1.04, hc[1] - hr * 1.04, hc[0] + hr * 1.04, hc[1] + hr * 1.04], 190, 350, fill=HAIR)
+    # face (lower part) over the hair: white chord so the hairline reads
+    d.ellipse([hc[0] - hr, hc[1] - hr * 0.62, hc[0] + hr, hc[1] + hr], fill=WHITE)
+    d.arc([hc[0] - hr, hc[1] - hr, hc[0] + hr, hc[1] + hr], 0, 360, fill=INK, width=lw)
+    # glasses
+    ex, ey = hr * 0.40, hc[1] - hr * 0.05
+    gr = hr * 0.30
+    for sx in (-1, 1):
+        x = hc[0] + sx * ex
+        d.ellipse([x - gr, ey - gr, x + gr, ey + gr], fill=WHITE, outline=INK, width=max(2, int(3.4 * u)))
+    d.line([hc[0] - ex + gr, ey, hc[0] + ex - gr, ey], fill=INK, width=max(2, int(3 * u)))
+    # eyes + brows by mood
+    er = max(3, int(5.5 * u))
     for sx in (-1, 1):
         x = hc[0] + sx * ex
         if mood == 2:
-            d.ellipse([x - er, ey - er, x + er, ey + er], outline=INK, width=max(2, int(3 * u)))
-            d.ellipse([x - er * .35, ey - er * .35, x + er * .35, ey + er * .35], fill=INK)
+            d.ellipse([x - er * 1.2, ey - er * 1.2, x + er * 1.2, ey + er * 1.2], fill=INK)
         else:
-            d.ellipse([x - er * .7, ey - er * .7, x + er * .7, ey + er * .7], fill=INK)
-    my, mw, mlw = hc[1] + hr * 0.42, hr * 0.42, max(2, int(4 * u))
+            d.ellipse([x - er, ey - er, x + er, ey + er], fill=INK)
+        by = ey - gr - 6 * u - (9 * u if mood == 2 else 0)
+        tilt = {1: -2, 0: 0, 2: -5, -1: 7}[mood] * u * sx * -1 if mood == -1 else {1: 0, 0: 0, 2: -3, -1: 0}[mood] * u
+        if mood == -1:
+            d.line([(x - gr * 0.9, by + 5 * u * sx), (x + gr * 0.9, by - 5 * u * sx)], fill=INK, width=max(2, int(4 * u)))
+        else:
+            d.line([(x - gr * 0.9, by + tilt), (x + gr * 0.9, by + tilt - (3 * u if mood == 1 else 0))], fill=INK,
+                   width=max(2, int(4 * u)))
+    my, mw, mlw = hc[1] + hr * 0.52, hr * 0.42, max(2, int(4 * u))
     if mood == 1:
         d.arc([hc[0] - mw, my - mw * .8, hc[0] + mw, my + mw * .6], 15, 165, fill=INK, width=mlw)
     elif mood == -1:
         d.arc([hc[0] - mw, my - mw * .2, hc[0] + mw, my + mw * 1.2], 195, 345, fill=INK, width=mlw)
     elif mood == 2:
-        d.ellipse([hc[0] - mw * .45, my - mw * .5, hc[0] + mw * .45, my + mw * .6], outline=INK, width=mlw)
+        d.ellipse([hc[0] - mw * .42, my - mw * .45, hc[0] + mw * .42, my + mw * .6], fill=(120, 30, 40), outline=INK, width=mlw)
     else:
-        d.line([hc[0] - mw * .6, my, hc[0] + mw * .6, my], fill=INK, width=mlw)
+        d.line([hc[0] - mw * .55, my, hc[0] + mw * .55, my], fill=INK, width=mlw)
     if flip:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
         hc = (W - hc[0], hc[1])
-    # effects drawn after the flip so text is never mirrored
     d = ImageDraw.Draw(img)
+    # effects drawn after the flip so text is never mirrored
     if fx == "burst" and fxt < 1.6:
         k = _ease(fxt / 0.25) * (1 - _ease((fxt - 1.1) / 0.5))
         for ang in (-155, -125, -95, -65, -35):
-            r0, r1 = hr * 1.25, hr * (1.25 + 0.55 * k)
+            r0, r1 = hr * 1.5, hr * (1.5 + 0.6 * k)
             a = math.radians(ang)
             d.line([(hc[0] + math.cos(a) * r0, hc[1] + math.sin(a) * r0),
                     (hc[0] + math.cos(a) * r1, hc[1] + math.sin(a) * r1)], fill=accent, width=max(3, int(7 * u)))
     elif fx == "spark":
-        for j, (ox, oy, sz) in enumerate(((-1.5, -0.9, 0.34), (1.55, -0.6, 0.26), (1.1, -1.5, 0.2))):
-            s = hr * sz * (0.7 + 0.3 * math.sin(phase * 2 * math.pi + j * 2))
+        for j, (ox, oy, sz) in enumerate(((-1.7, -1.0, 0.34), (1.75, -0.7, 0.26), (1.2, -1.7, 0.2))):
+            s_ = hr * sz * (0.7 + 0.3 * math.sin(phase * 2 * math.pi + j * 2))
             cx, cy = hc[0] + ox * hr, hc[1] + oy * hr
-            d.polygon([(cx, cy - s * 1.6), (cx + s * .4, cy - s * .4), (cx + s * 1.6, cy), (cx + s * .4, cy + s * .4),
-                       (cx, cy + s * 1.6), (cx - s * .4, cy + s * .4), (cx - s * 1.6, cy), (cx - s * .4, cy - s * .4)],
+            d.polygon([(cx, cy - s_ * 1.6), (cx + s_ * .4, cy - s_ * .4), (cx + s_ * 1.6, cy), (cx + s_ * .4, cy + s_ * .4),
+                       (cx, cy + s_ * 1.6), (cx - s_ * .4, cy + s_ * .4), (cx - s_ * 1.6, cy), (cx - s_ * .4, cy - s_ * .4)],
                       fill=accent)
     elif fx == "q":
-        f = _font(int(hr * 1.4))
+        f = _font(int(hr * 1.5))
         bounce = math.sin(phase * 2 * math.pi) * hr * 0.08
-        d.text((hc[0] + hr * 0.9, hc[1] - hr * 2.0 + bounce), "?", font=f, fill=accent, stroke_width=max(2, int(3 * u)),
+        d.text((hc[0] + hr * 1.0, hc[1] - hr * 2.3 + bounce), "?", font=f, fill=accent, stroke_width=max(2, int(3 * u)),
                stroke_fill=INK)
     img = img.resize((side, side), Image.LANCZOS)
-    # white sticker outline so the figure reads on top of any picture
-    r = max(4, int(height_px * 0.022))
+    # white sticker outline so the presenter pops off any picture
+    r = max(4, int(height_px * 0.02))
     halo = img.split()[3].filter(ImageFilter.MaxFilter(2 * r + 1)).filter(ImageFilter.GaussianBlur(1.2))
     out = Image.new("RGBA", img.size, (255, 255, 255, 0))
     out.putalpha(halo)
@@ -164,44 +201,24 @@ def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
     return out, int(470 * scale)
 
 
-# ----------------------------------------------------------------------------- layout
+# ----------------------------------------------------------------------------- full-bleed stage
 def layout(w, h, side):
-    """Rects: headline box, card box, figure (cx, floor_y, height)."""
-    if w >= h:   # landscape 16:9: card + side column (headline on top, figure below)
-        card_w = int(w * 0.66)
-        cx0 = int(w * 0.03) if side == 0 else int(w * 0.97) - card_w
-        card = (cx0, int(h * 0.07), cx0 + card_w, int(h * 0.835))
-        col0 = card[2] + int(w * 0.02) if side == 0 else int(w * 0.03)
-        col1 = int(w * 0.97) if side == 0 else card[0] - int(w * 0.02)
-        return dict(land=True, head=(col0, int(h * 0.07), col1, int(h * 0.38)), card=card, maxlines=4,
-                    fig=((col0 + col1) // 2, int(h * 0.835), int(h * 0.36)), fs=int(h * 0.12))
-    card = (int(w * 0.04), int(h * 0.175), int(w * 0.96), int(h * 0.705))
-    fig_cx = int(w * 0.20) if side == 0 else int(w * 0.80)
-    return dict(land=False, head=(int(w * 0.05), int(h * 0.04), int(w * 0.95), int(h * 0.16)), card=card, maxlines=2,
-                fig=(fig_cx, int(h * 0.705) - int(h * 0.012), int(h * 0.225)), fs=int(h * 0.062))
+    if w >= h:   # landscape 16:9
+        return dict(land=True, head=(int(w * 0.06), int(h * 0.05), int(w * 0.94), int(h * 0.22)), maxlines=2,
+                    fig=(int(w * 0.14) if side == 0 else int(w * 0.86), int(h * 0.915), int(h * 0.55)), fs=int(h * 0.105))
+    return dict(land=False, head=(int(w * 0.05), int(h * 0.045), int(w * 0.95), int(h * 0.20)), maxlines=2,
+                fig=(int(w * 0.19) if side == 0 else int(w * 0.81), int(h * 0.71), int(h * 0.27)), fs=int(h * 0.072))
 
 
-def backdrop(w, h, tint):
-    """Clean flat colour with a very soft vignette (no grid, no texture)."""
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    r = np.sqrt(((xx - w / 2) / (w * 0.75)) ** 2 + ((yy - h / 2) / (h * 0.75)) ** 2)
-    base = np.array(tint, np.float32)[None, None, :]
-    if LIGHT:
-        k = np.clip(r - 0.35, 0, 1)[:, :, None] * (0.03 if PAPER else 0.07)
-        out = base * (1 - k)
-    else:
-        k = np.clip(1.0 - r, 0, 1)[:, :, None] * 0.55
-        out = base * (1 + k * 0.9) + k * 10
-    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
-    if PAPER:   # faint square grid, like the sketch paper in the version you liked
-        d = ImageDraw.Draw(img)
-        g = tuple(max(0, c - 20) for c in tint)
-        step = max(40, w // 24)
-        for x in range(0, w, step):
-            d.line([(x, 0), (x, h)], fill=g, width=2)
-        for y in range(0, h, step):
-            d.line([(0, y), (w, y)], fill=g, width=2)
-    return img
+def gradients(w, h):
+    """Soft dark fades at top (headline) and bottom (captions) so text always reads on any picture."""
+    ys = np.arange(h, dtype=np.float32) / h
+    top = np.clip(1 - ys / 0.30, 0, 1) ** 1.6 * 0.62
+    bot = np.clip((ys - 0.55) / 0.45, 0, 1) ** 1.4 * 0.70
+    a = np.clip(top + bot, 0, 0.85)
+    arr = np.zeros((h, w, 4), np.uint8)
+    arr[:, :, 3] = (a[:, None] * 255).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
 
 
 def wrap(text, font, maxw, d, maxlines=2):
@@ -219,14 +236,7 @@ def wrap(text, font, maxw, d, maxlines=2):
     return lines[:maxlines]
 
 
-def rounded_mask(size, r):
-    m = Image.new("L", size, 0)
-    ImageDraw.Draw(m).rounded_rectangle([0, 0, size[0] - 1, size[1] - 1], r, fill=255)
-    return m
-
-
 def cover(im, size, extra=1.0):
-    """Resize to cover `size` (times extra), centre-cropped."""
     tw, th = int(size[0] * extra), int(size[1] * extra)
     s = max(tw / im.width, th / im.height)
     im = im.resize((int(im.width * s) + 1, int(im.height * s) + 1), Image.LANCZOS)
@@ -235,47 +245,15 @@ def cover(im, size, extra=1.0):
 
 
 def headline_image(text, box, fs0, maxlines, accent):
-    if PAPER:
-        return headline_paper(text, box, fs0, maxlines, accent)
-    return headline_anton(text, box, fs0, maxlines, accent)
-
-
-def headline_paper(text, box, fs0, maxlines, accent):
-    """v2 headline: heavy sans, ink colour, accent underline bar."""
-    bw, bh = box[2] - box[0], box[3] - box[1]
-    probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-    text = text.upper()
-    fs = int(fs0 * 0.95)
-    face = FONTS[1]
-    while True:
-        font = ImageFont.truetype(face, fs)
-        lines = wrap(text, font, bw, probe, 12)
-        lh = int(fs * 1.12)
-        if (len(lines) <= maxlines and lh * len(lines) + int(fs * 0.3) <= bh) or fs < fs0 * 0.4:
-            break
-        fs = int(fs * 0.93)
-    lines = lines[:maxlines]
-    img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    total = lh * len(lines) + int(fs * 0.3)
-    y = max(0, (bh - total) // 2)
-    for ln in lines:
-        d.text(((bw - d.textlength(ln, font=font)) / 2, y), ln, font=font, fill=INK)
-        y += lh
-    d.rounded_rectangle([bw * 0.33, y + 2, bw * 0.67, y + 2 + max(8, int(fs * 0.09))], 6, fill=accent)
-    return img
-
-
-def headline_anton(text, box, fs0, maxlines, accent):
-    """Bold Anton headline: white words, the longest word in the accent colour. Returns RGBA."""
+    """Anton caps with a thick ink stroke; the longest word in the accent colour."""
     bw, bh = box[2] - box[0], box[3] - box[1]
     probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     text = text.upper()
     fs = fs0
     while True:
         font = _font(fs)
-        lines = wrap(text, font, bw, probe, 12)
-        lh = int(fs * 1.12)
+        lines = wrap(text, font, bw - fs * 0.3, probe, 12)
+        lh = int(fs * 1.14)
         if (len(lines) <= maxlines and lh * len(lines) <= bh) or fs < fs0 * 0.45:
             break
         fs = int(fs * 0.92)
@@ -283,102 +261,75 @@ def headline_anton(text, box, fs0, maxlines, accent):
     key = max(text.split(), key=len) if text.split() else ""
     img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    sw = max(3, int(fs * 0.07))
     y = max(0, (bh - lh * len(lines)) // 2)
-    centre = not (box[2] - box[0] < 700 and False)
     for ln in lines:
         x = (bw - d.textlength(ln, font=font)) / 2
         for wd in ln.split():
-            col = accent if wd == key else TXT
-            if not LIGHT:
-                d.text((x + 3, y + 5), wd, font=font, fill=(0, 0, 0, 150))
-            d.text((x, y), wd, font=font, fill=col)
+            d.text((x, y), wd, font=font, fill=accent if wd == key else WHITE, stroke_width=sw, stroke_fill=INK)
             x += d.textlength(wd + " ", font=font)
         y += lh
     return img
 
 
 class SceneArt:
-    """Static pieces of a scene prepared once: background, card art, card overlay, headline."""
-
-    def __init__(self, w, h, headline, art, accent, tint, side):
+    def __init__(self, w, h, headline, art, accent, side):
         self.w, self.h, self.side = w, h, side
         self.L = L = layout(w, h, side)
-        x0, y0, x1, y1 = L["card"]
-        self.cw, self.ch = x1 - x0, y1 - y0
-        bg = backdrop(w, h, tint)
-        if LIGHT:   # hard marker-style offset shadow in the accent colour
-            off = max(12, int(w * 0.012))
-            ImageDraw.Draw(bg).rounded_rectangle([x0 + off, y0 + off, x1 + off, y1 + off], 38, fill=accent)
-        else:
-            sh = Image.new("L", (w, h), 0)
-            ImageDraw.Draw(sh).rounded_rectangle([x0, y0 + int(h * 0.012), x1, y1 + int(h * 0.012)], 38, fill=170)
-            sh = sh.filter(ImageFilter.GaussianBlur(max(10, int(h * 0.012))))
-            bg.paste((0, 0, 0), (0, 0), sh)
-        # soft contact shadow under the figure
-        fcx, floor, fh = L["fig"]
-        self.bg = bg
-        self.mask = rounded_mask((self.cw, self.ch), 36)
-        ov = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
-        ImageDraw.Draw(ov).rounded_rectangle([0, 0, self.cw - 1, self.ch - 1], 36, outline=(INK if LIGHT else accent) + (255,),
-                                             width=max(9, int(w * 0.009)) if LIGHT else max(5, int(w * 0.005)))
-        self.ov = ov
+        self.grad = gradients(w, h)
         hb = L["head"]
         self.head = headline_image(headline, hb, L["fs"], L["maxlines"], accent)
         self.head_pos = (hb[0], hb[1])
         if art is None:
-            flat = Image.new("RGB", (self.cw, self.ch), tint)
-            fd = ImageDraw.Draw(flat)
-            fd.text((self.cw / 2, self.ch / 2), "?", font=_font(int(self.ch * 0.5)), fill=accent, anchor="mm")
-            art = flat
-        self.big = cover(art, (self.cw, self.ch), 1.25)
+            art = Image.new("RGB", (512, 512), (40, 60, 110))
+            ImageDraw.Draw(art).text((256, 256), "?", font=_font(300), fill=accent, anchor="mm")
+        self.big = cover(art, (w, h), 1.30)
 
-    def card_at(self, t, span, idx):
-        """Card picture with a slow camera move that varies per scene."""
+    def frame_at(self, t, span, idx):
+        """Full-frame picture with a lively camera move (varies per scene; scene 1 starts with a punch-in reveal)."""
         k = min(1.0, t / max(span, 0.5))
         bw, bh = self.big.size
         mode = idx % 5
-        if mode == 0:      # push in
-            z, px, py = 1.0 + 0.16 * k, 0.0, 0.0
-        elif mode == 1:    # pull out
-            z, px, py = 1.16 - 0.16 * k, 0.0, 0.0
-        elif mode == 2:    # drift right while slightly zoomed
-            z, px, py = 1.12, (k - 0.5), 0.0
-        elif mode == 3:    # drift left
-            z, px, py = 1.12, (0.5 - k), 0.0
-        else:              # diagonal push
-            z, px, py = 1.0 + 0.12 * k, (k - 0.5) * 0.6, (0.5 - k) * 0.6
-        ww, wh = bw / z, bh / z
+        if idx == 0:
+            z, px, py = 1.30 - 0.30 * _ease(k * 1.4), 0.0, 0.0
+        elif mode == 0:
+            z, px, py = 1.0 + 0.22 * k, 0.0, 0.0
+        elif mode == 1:
+            z, px, py = 1.22 - 0.22 * k, 0.0, 0.0
+        elif mode == 2:
+            z, px, py = 1.16, (k - 0.5) * 1.0, 0.0
+        elif mode == 3:
+            z, px, py = 1.16, (0.5 - k) * 1.0, 0.0
+        else:
+            z, px, py = 1.0 + 0.18 * k, (k - 0.5) * 0.7, (0.5 - k) * 0.7
+        ww, wh = bw / z / 1.0, bh / z / 1.0
+        ww, wh = ww * (1 / 1.0), wh * (1 / 1.0)
+        # keep the visible window the size of the output frame (big is 1.3x) at z=1.3 -> 1x
+        ww, wh = self.w * 1.30 / z, self.h * 1.30 / z
+        ww, wh = min(ww, bw), min(wh, bh)
         cx = bw / 2 + px * (bw - ww)
         cy = bh / 2 + py * (bh - wh)
         box = (cx - ww / 2, cy - wh / 2, cx + ww / 2, cy + wh / 2)
-        return self.big.resize((self.cw, self.ch), Image.BILINEAR, box=box)
+        return self.big.resize((self.w, self.h), Image.BILINEAR, box=box)
 
 
 def draw_progress(frame, w, h, frac, accent):
     d = ImageDraw.Draw(frame)
-    d.rectangle([0, h - max(6, h // 150), int(w * frac), h], fill=accent)
-
-
-def _back(t):
-    """Ease-out-back: quick pop with a small overshoot."""
-    t = max(0.0, min(1.0, t))
-    c1, c3 = 1.70158, 2.70158
-    return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
+    d.rectangle([0, 0, int(w * frac), max(6, h // 160)], fill=accent)
 
 
 # ----------------------------------------------------------------------------- scene render
 def render_scene(sa, keys, mood, fx, accent, span, dest, w, h, fps, idx, prog0=None, prog1=None):
     frames = max(2, int(round(span * fps)))
     L = sa.L
-    x0, y0, x1, y1 = L["card"]
     fcx, floor, fh = L["fig"]
-    flip = (sa.side == 1) if not L["land"] else (sa.side == 0)   # face the card / the story
+    flip = (sa.side == 1) if not L["land"] else (sa.side == 0)   # face into the picture
     cache = {}
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
            "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", str(dest)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    off_x = (-1 if (fcx < w / 2) else 1) * w * 0.35       # figure slides in from its own edge
+    off_x = (-1 if (fcx < w / 2) else 1) * w * 0.35
     try:
         for f in range(frames):
             t = f / fps
@@ -403,34 +354,24 @@ def render_scene(sa, keys, mood, fx, accent, span, dest, w, h, fps, idx, prog0=N
                 if len(cache) > 400:
                     cache.pop(next(iter(cache)))
             fig, feet = cache[key]
-            frame = sa.bg.copy()
-            art = sa.card_at(t, span, idx)
-            pop = _back(t / 0.42)
-            if abs(pop - 1.0) > 0.002:
-                tile = art.convert("RGBA")
-                tile.paste(sa.ov, (0, 0), sa.ov)
-                s = 0.86 + 0.14 * pop
-                tw, th = int(sa.cw * s), int(sa.ch * s)
-                tile = tile.resize((tw, th), Image.BILINEAR)
-                m = sa.mask.resize((tw, th), Image.BILINEAR)
-                frame.paste(tile.convert("RGB"), (x0 + (sa.cw - tw) // 2, y0 + (sa.ch - th) // 2), m)
-            else:
-                frame.paste(art, (x0, y0), sa.mask)
-                frame.paste(sa.ov, (x0, y0), sa.ov)
+            frame = sa.frame_at(t, span, idx)
+            frame.paste(sa.grad, (0, 0), sa.grad)
             # headline: quick scale-slam
             hp = _ease(t / 0.22)
             hd = sa.head
             if hp < 1.0:
-                s = 1.28 - 0.28 * hp
+                s = 1.3 - 0.3 * hp
                 hd = hd.resize((max(1, int(hd.width * s)), max(1, int(hd.height * s))), Image.BILINEAR)
                 px = sa.head_pos[0] + (sa.head.width - hd.width) // 2
                 py = sa.head_pos[1] + (sa.head.height - hd.height) // 2
                 frame.paste(hd, (px, py), hd)
             else:
                 frame.paste(hd, sa.head_pos, hd)
-            # figure slides in from the side then settles
+            # presenter slides in from the edge and settles
             slide = (1 - _ease(t / 0.4)) * off_x
             frame.paste(fig, (int(fcx - fig.width / 2 + slide), int(floor - feet)), fig)
+            if t < 0.14:   # tiny white flash on every cut for punch
+                frame = Image.blend(frame, Image.new("RGB", (w, h), WHITE), 0.30 * (1 - t / 0.14))
             if prog0 is not None:
                 draw_progress(frame, w, h, prog0 + (prog1 - prog0) * (f / frames), accent)
             proc.stdin.write(np.asarray(frame).tobytes())
@@ -489,7 +430,7 @@ def plan_details(scenes, title):
 
 
 def get_art(desc, dest, land):
-    shape = "wide landscape composition" if land else "wide composition"
+    shape = "wide landscape composition filling the whole frame" if land else "tall vertical composition filling the whole frame"
     src = A.make_image(f"{desc}, {CARD_STYLE.replace('wide composition', shape)}", dest)
     if not src:
         return None
@@ -549,9 +490,9 @@ def build(script, title, words, length, work, w, h, fps):
     segs, spans = [], []
     total = scenes[-1]["t1"]
     for i, (sc, dt) in enumerate(zip(scenes, det)):
-        accent, tint = ACCENTS[i % len(ACCENTS)], BGS[i % len(BGS)]
+        accent = ACCENTS[i % len(ACCENTS)]
         side = i % 2
-        sa = SceneArt(w, h, dt["headline"], arts[i], accent, tint, side)
+        sa = SceneArt(w, h, dt["headline"], arts[i], accent, side)
         end_of_chunk = (i % CHUNK == CHUNK - 1) or i == len(scenes) - 1
         base = sc["t1"] - sc["t0"]
         span = base + (0 if end_of_chunk else A.OVERLAP)
