@@ -28,6 +28,11 @@ on:
         required: false
         default: true
         type: boolean
+      visual_style:
+        description: "cinematic (default) or stickman (hand-drawn stick-figure explainer look)"
+        required: false
+        default: cinematic
+        type: string
       lengthen:
         description: Let Gemini rewrite the script longer (false for news/fact-bound scripts)
         required: false
@@ -70,6 +75,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OVH_AI_TOKEN: ${{ secrets.OVH_AI_TOKEN }}
           HORDE_API_KEY: ${{ secrets.HORDE_API_KEY }}
+          VISUAL_STYLE: ${{ inputs.visual_style }}
           LENGTHEN: ${{ inputs.lengthen == false && '0' || '1' }}
           SKIP_CLOUDFLARE: ${{ inputs.publish == false && '1' || '0' }}
         run: python render.py

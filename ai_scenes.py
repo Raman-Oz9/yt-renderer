@@ -28,6 +28,13 @@ STYLE = ("epic cinematic film still shot on IMAX, ultra detailed and razor sharp
          "deep contrast with glowing highlights, volumetric light rays, dramatic scale and depth, "
          "main subject large and centered, photorealistic, vertical 9:16 composition, no text, no letters, no words, "
          "no signs, no logos, no captions, no watermark")
+STICKMAN = os.environ.get("VISUAL_STYLE", "").strip().lower() == "stickman"
+if STICKMAN:
+    STYLE = ("hand-drawn minimalist explainer illustration on warm near-white paper with a very faint square grid, "
+             "fine slightly irregular black pen outlines, a slender stick figure with a round head, long thin single-line "
+             "limbs and small oval hands, colourful hand-drawn props with marker accents in warm yellow, red, green and "
+             "navy blue, clean uncluttered composition with one clear subject, expressive, vertical 9:16, "
+             "no text, no letters, no words, no numbers, no logos, no captions, no watermark")
 MIN_SCENE, MAX_SCENE = 2.2, 4.6   # fast cuts keep still images feeling alive
 OVERLAP = 0.7                      # slow cross-fade between scenes
 
@@ -123,6 +130,23 @@ def write_prompts(scenes, title):
     if not GEMINI_KEY:
         return fallback
     listing = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(scenes))
+    stick_ask = None
+    if STICKMAN:
+        stick_ask = (
+            f"You are the art director of a hand-drawn stick-figure explainer Short titled \"{title}\".\n"
+            f"The full script, for context: {' '.join(sc['text'] for sc in scenes)[:1800]}\n"
+            "For each numbered narration line write ONE image-generation prompt for a hand-drawn illustration on paper "
+            "that literally shows what the line says. A slender stick figure (round head, thin single-line limbs) acts "
+            "out the line with its WHOLE BODY - strong readable emotion, leaning, reaching, pointing, recoiling - while "
+            "interacting with the hand-drawn colourful objects, places or diagrams the line names (name the exact subject: "
+            "a black hole as a black circle with an orange swirling disk, a cave diver with tank and fins, a volcano with "
+            "lava, and so on). Use only the ONE stick figure per picture, with a different pose, expression and camera "
+            "framing in every scene (wide view, close-up, from above, scale comparison); alternate scenes with the figure "
+            "and scenes that show only the subject drawn large. Never write any words, letters, numbers or labels inside the "
+            "picture. Stay inside the video's own subject and never switch to an unrelated place or object. Keep each scene "
+            "to ONE clear focal subject and a simple composition. Max 40 words each. Return ONLY a JSON array of strings, "
+            f"one per line, in order, exactly {len(scenes)} items.\n\n{listing}"
+        )
     ask = (
         f"You are the art director of a documentary Short titled \"{title}\".\n"
         f"The full script, for context: {' '.join(sc['text'] for sc in scenes)[:1800]}\n"
@@ -138,6 +162,8 @@ def write_prompts(scenes, title):
         "Max 40 words each. Return ONLY a JSON array of strings, one per line, "
         f"in order, exactly {len(scenes)} items.\n\n{listing}"
     )
+    if stick_ask:
+        ask = stick_ask
     for model in TEXT_MODELS:
         try:
             r = requests.post(
@@ -341,6 +367,8 @@ _NO_PEOPLE_RE = re.compile(r"\b(no|without)\s+(people|humans|faces|hands|persons
 
 
 def has_person(prompt):
+    if STICKMAN:
+        return False
     return bool(_PERSON_RE.search(_NO_PEOPLE_RE.sub("", prompt)))
 
 
@@ -409,7 +437,7 @@ def make_image(prompt, dest):
 
 def check_image(img, scene_text):
     """Ask Gemini (vision) to spot typical AI-image mistakes. Returns (ok, problem)."""
-    if not GEMINI_KEY:
+    if not GEMINI_KEY or STICKMAN:
         return True, ""
     try:
         small = Path(str(img) + ".chk.jpg")
