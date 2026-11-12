@@ -23,7 +23,9 @@ YELLOW = (255, 210, 63)
 CORAL = (255, 94, 91)
 WHITE = (255, 255, 255)
 import os
-LIGHT = os.environ.get("STICK_THEME", "light").strip().lower() != "dark"
+THEME = os.environ.get("STICK_THEME", "paper").strip().lower()   # paper (default, the look you liked) | light | dark
+LIGHT = THEME != "dark"
+PAPER = THEME == "paper"
 if LIGHT:   # clean light paper (no grid, no grain), ink figure, bold marker accents
     ACCENTS = [(226, 70, 56), (38, 150, 96), (36, 98, 190), (240, 150, 20), (150, 80, 190)]
     BGS = [(252, 249, 242), (246, 250, 252), (253, 245, 241), (247, 251, 244), (251, 247, 253)]
@@ -185,12 +187,21 @@ def backdrop(w, h, tint):
     r = np.sqrt(((xx - w / 2) / (w * 0.75)) ** 2 + ((yy - h / 2) / (h * 0.75)) ** 2)
     base = np.array(tint, np.float32)[None, None, :]
     if LIGHT:
-        k = np.clip(r - 0.35, 0, 1)[:, :, None] * 0.07
+        k = np.clip(r - 0.35, 0, 1)[:, :, None] * (0.03 if PAPER else 0.07)
         out = base * (1 - k)
     else:
         k = np.clip(1.0 - r, 0, 1)[:, :, None] * 0.55
         out = base * (1 + k * 0.9) + k * 10
-    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+    if PAPER:   # faint square grid, like the sketch paper in the version you liked
+        d = ImageDraw.Draw(img)
+        g = tuple(max(0, c - 20) for c in tint)
+        step = max(40, w // 24)
+        for x in range(0, w, step):
+            d.line([(x, 0), (x, h)], fill=g, width=2)
+        for y in range(0, h, step):
+            d.line([(0, y), (w, y)], fill=g, width=2)
+    return img
 
 
 def wrap(text, font, maxw, d, maxlines=2):
@@ -224,6 +235,38 @@ def cover(im, size, extra=1.0):
 
 
 def headline_image(text, box, fs0, maxlines, accent):
+    if PAPER:
+        return headline_paper(text, box, fs0, maxlines, accent)
+    return headline_anton(text, box, fs0, maxlines, accent)
+
+
+def headline_paper(text, box, fs0, maxlines, accent):
+    """v2 headline: heavy sans, ink colour, accent underline bar."""
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    text = text.upper()
+    fs = int(fs0 * 0.95)
+    face = FONTS[1]
+    while True:
+        font = ImageFont.truetype(face, fs)
+        lines = wrap(text, font, bw, probe, 12)
+        lh = int(fs * 1.12)
+        if (len(lines) <= maxlines and lh * len(lines) + int(fs * 0.3) <= bh) or fs < fs0 * 0.4:
+            break
+        fs = int(fs * 0.93)
+    lines = lines[:maxlines]
+    img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    total = lh * len(lines) + int(fs * 0.3)
+    y = max(0, (bh - total) // 2)
+    for ln in lines:
+        d.text(((bw - d.textlength(ln, font=font)) / 2, y), ln, font=font, fill=INK)
+        y += lh
+    d.rounded_rectangle([bw * 0.33, y + 2, bw * 0.67, y + 2 + max(8, int(fs * 0.09))], 6, fill=accent)
+    return img
+
+
+def headline_anton(text, box, fs0, maxlines, accent):
     """Bold Anton headline: white words, the longest word in the accent colour. Returns RGBA."""
     bw, bh = box[2] - box[0], box[3] - box[1]
     probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
