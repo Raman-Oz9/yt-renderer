@@ -51,7 +51,7 @@ def layout(w, h):
         return dict(land=True, head=(int(w * 0.10), int(h * 0.03), int(w * 0.90), int(h * 0.165)), maxlines=1,
                     box=(0, int(h * 0.19), w, int(h * 0.90)), fs=int(h * 0.10))
     return dict(land=False, head=(int(w * 0.05), int(h * 0.04), int(w * 0.95), int(h * 0.145)), maxlines=2,
-                box=(0, int(h * 0.14), w, int(h * 0.76)), fs=int(h * 0.07))
+                box=(0, int(h * 0.135), w, int(h * 0.785)), fs=int(h * 0.07))
 
 
 def wrap(text, font, maxw, d, maxlines=2):
@@ -119,17 +119,17 @@ class SceneArt:
         self.head_pos = (hb[0], hb[1])
         land = L["land"]
         # stage geometry -----------------------------------------------------------------
-        self.fh = int(bh * (0.80 if land else 0.60))                         # figure height
+        self.fh = int(bh * (0.80 if land else 0.68))                         # figure height
         self.floor = int(bh * (0.95 if land else 0.93))
         self.fig_cx = int(bw * ((0.25 if side == 0 else 0.75) if land else (0.30 if side == 0 else 0.70)))
         opp = 1 - side
-        main_px = int(bh * 0.60) if land else int(bw * 0.50)
+        main_px = int(bh * 0.60) if land else int(bw * 0.56)
         self.main = K.render_icon(icons[0], main_px)
         self.main_c = (int(bw * ((0.72 if opp == 1 else 0.28) if land else (0.70 if opp == 1 else 0.30))),
                        int(bh * (0.42 if land else 0.27)))
         self.second = None
         if len(icons) > 1:
-            sp = int(bh * 0.30) if land else int(bw * 0.24)
+            sp = int(bh * 0.30) if land else int(bw * 0.27)
             self.second = K.render_icon(icons[1], sp)
             self.second_c = (int(self.fig_cx + (0.02 * bw if side else -0.02 * bw)), int(bh * (0.15 if land else 0.12)))
             if land:
