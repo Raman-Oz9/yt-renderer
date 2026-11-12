@@ -375,8 +375,8 @@ def build_ass(words, path):
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        + (f"Style: Cap,Anton,{110 if W < H else 92},&H00FFFFFF,&H00FFFFFF,"
-           f"&H00121212,&H96000000,0,0,0,0,100,100,2,0,1,7,4,2,40,40,{CAPTION_MARGIN_V},1\n\n"
+        + (f"Style: Cap,Anton,{104 if W < H else 88},&H00FFFFFF,&H00FFFFFF,"
+           f"&H00121212,&H00121212,0,0,0,0,100,100,2,0,3,14,0,2,40,40,{CAPTION_MARGIN_V},1\n\n"
            if STICK else
            f"Style: Cap,DejaVu Sans,{CAPTION_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
            f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,1,2,40,40,"

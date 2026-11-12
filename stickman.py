@@ -22,8 +22,16 @@ INK = (18, 18, 22)
 YELLOW = (255, 210, 63)
 CORAL = (255, 94, 91)
 WHITE = (255, 255, 255)
-ACCENTS = [YELLOW, CORAL, YELLOW, (70, 205, 235)]          # one signature colour + two helpers
-BGS = [(14, 18, 30), (24, 14, 34), (10, 28, 36), (30, 18, 20)]   # deep, cohesive dark backgrounds
+import os
+LIGHT = os.environ.get("STICK_THEME", "light").strip().lower() != "dark"
+if LIGHT:   # clean light paper (no grid, no grain), ink figure, bold marker accents
+    ACCENTS = [(226, 70, 56), (38, 150, 96), (36, 98, 190), (240, 150, 20), (150, 80, 190)]
+    BGS = [(252, 249, 242), (246, 250, 252), (253, 245, 241), (247, 251, 244), (251, 247, 253)]
+    TXT = INK
+else:       # deep dark backgrounds, yellow signature accent
+    ACCENTS = [YELLOW, CORAL, YELLOW, (70, 205, 235)]
+    BGS = [(14, 18, 30), (24, 14, 34), (10, 28, 36), (30, 18, 20)]
+    TXT = WHITE
 FONTS = [str(Path(__file__).with_name("fonts") / "Anton.ttf"),
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
 TRANSITIONS = ["slideleft", "wipeleft", "circleopen", "smoothleft", "zoomin", "slideup"]
@@ -172,12 +180,16 @@ def layout(w, h, side):
 
 
 def backdrop(w, h, tint):
-    """Clean flat colour with a soft centre glow (no grid, no texture)."""
+    """Clean flat colour with a very soft vignette (no grid, no texture)."""
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     r = np.sqrt(((xx - w / 2) / (w * 0.75)) ** 2 + ((yy - h / 2) / (h * 0.75)) ** 2)
-    k = np.clip(1.0 - r, 0, 1)[:, :, None] * 0.55
     base = np.array(tint, np.float32)[None, None, :]
-    out = base * (1 + k * 0.9) + k * 10
+    if LIGHT:
+        k = np.clip(r - 0.35, 0, 1)[:, :, None] * 0.07
+        out = base * (1 - k)
+    else:
+        k = np.clip(1.0 - r, 0, 1)[:, :, None] * 0.55
+        out = base * (1 + k * 0.9) + k * 10
     return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 
 
@@ -233,8 +245,9 @@ def headline_image(text, box, fs0, maxlines, accent):
     for ln in lines:
         x = (bw - d.textlength(ln, font=font)) / 2
         for wd in ln.split():
-            col = accent if wd == key else WHITE
-            d.text((x + 3, y + 5), wd, font=font, fill=(0, 0, 0, 150))
+            col = accent if wd == key else TXT
+            if not LIGHT:
+                d.text((x + 3, y + 5), wd, font=font, fill=(0, 0, 0, 150))
             d.text((x, y), wd, font=font, fill=col)
             x += d.textlength(wd + " ", font=font)
         y += lh
@@ -250,18 +263,21 @@ class SceneArt:
         x0, y0, x1, y1 = L["card"]
         self.cw, self.ch = x1 - x0, y1 - y0
         bg = backdrop(w, h, tint)
-        # soft drop shadow under the card
-        sh = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(sh).rounded_rectangle([x0, y0 + int(h * 0.012), x1, y1 + int(h * 0.012)], 38, fill=170)
-        sh = sh.filter(ImageFilter.GaussianBlur(max(10, int(h * 0.012))))
-        bg.paste((0, 0, 0), (0, 0), sh)
+        if LIGHT:   # hard marker-style offset shadow in the accent colour
+            off = max(12, int(w * 0.012))
+            ImageDraw.Draw(bg).rounded_rectangle([x0 + off, y0 + off, x1 + off, y1 + off], 38, fill=accent)
+        else:
+            sh = Image.new("L", (w, h), 0)
+            ImageDraw.Draw(sh).rounded_rectangle([x0, y0 + int(h * 0.012), x1, y1 + int(h * 0.012)], 38, fill=170)
+            sh = sh.filter(ImageFilter.GaussianBlur(max(10, int(h * 0.012))))
+            bg.paste((0, 0, 0), (0, 0), sh)
         # soft contact shadow under the figure
         fcx, floor, fh = L["fig"]
         self.bg = bg
         self.mask = rounded_mask((self.cw, self.ch), 36)
         ov = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
-        ImageDraw.Draw(ov).rounded_rectangle([0, 0, self.cw - 1, self.ch - 1], 36, outline=accent + (255,),
-                                             width=max(5, int(w * 0.005)))
+        ImageDraw.Draw(ov).rounded_rectangle([0, 0, self.cw - 1, self.ch - 1], 36, outline=(INK if LIGHT else accent) + (255,),
+                                             width=max(9, int(w * 0.009)) if LIGHT else max(5, int(w * 0.005)))
         self.ov = ov
         hb = L["head"]
         self.head = headline_image(headline, hb, L["fs"], L["maxlines"], accent)
