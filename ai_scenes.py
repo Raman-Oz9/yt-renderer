@@ -550,6 +550,9 @@ def join_with_fades(segs, spans, dest):
 
 
 def build_ai_segments(script, title, words, length, work, w, h, fps):
+    if STICKMAN:
+        import stickman
+        return stickman.build(script, title, words, length, work, w, h, fps)
     note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
     _BUDGET_END[0] = time.time() + 34 * 60
     scenes = plan_scenes(script, words, length)
