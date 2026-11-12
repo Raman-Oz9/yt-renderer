@@ -214,6 +214,12 @@ def multiply_prop(base, prop, box):
     # lift near-white to pure white so the paper shows through cleanly
     arr = np.asarray(p).astype(np.float32)
     arr = np.clip((arr - 40) * (255.0 / 190.0), 0, 255)
+    # feather the edges to white so the picture melts into the paper instead of showing a box
+    ph, pw = arr.shape[:2]
+    fx = np.minimum(np.arange(pw), pw - 1 - np.arange(pw)) / (0.14 * pw)
+    fy = np.minimum(np.arange(ph), ph - 1 - np.arange(ph)) / (0.14 * ph)
+    m = np.clip(np.minimum(fy[:, None], fx[None, :]), 0, 1)[:, :, None]
+    arr = 255 - (255 - arr) * m
     p = Image.fromarray(arr.astype(np.uint8))
     x = box[0] + (bw - p.width) // 2
     y = box[1] + (bh - p.height) // 2
@@ -237,7 +243,7 @@ def make_bg(w, h, headline, prop, accent):
     d.rectangle([w * 0.18, y + 8, w * 0.82, y + 18], fill=accent)
     top = y + 50
     if prop is not None:
-        multiply_prop(bg, prop, (int(w * 0.08), top, int(w * 0.92), int(h * 0.56)))
+        multiply_prop(bg, prop, (int(w * 0.08), top, int(w * 0.92), int(h * 0.47)))
     else:
         d.ellipse([w * .3, top + 60, w * .7, top + 60 + w * .4], outline=accent, width=14)
     return bg
@@ -247,14 +253,14 @@ def render_scene(bg, pose_a, pose_b, mood, span, dest, w, h, fps, side):
     frames = max(2, int(round(span * fps)))
     scale = w / 1080 * 1.0
     fig_w = int(520 * scale)
-    base_y = int(h * 0.375)
+    base_y = int(h * 0.415)
     x0 = int(w * (0.04 if side == 0 else 0.96 - fig_w / w))
     x_mid = int(w * 0.5 - fig_w / 2)
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast",
            "-crf", "21", "-pix_fmt", "yuv420p", str(dest)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    big = 1.6
+    big = 1.35
     try:
         for f in range(frames):
             t = f / fps
