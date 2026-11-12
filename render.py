@@ -104,6 +104,7 @@ CAPTION_FONT_SIZE = 54
 CAPTION_MARGIN_V = 430   # distance from the bottom edge
 if W > H:
     CAPTION_FONT_SIZE, CAPTION_MARGIN_V = 62, 48
+STICK = os.environ.get("VISUAL_STYLE", "").strip().lower() == "stickman"
 MUSIC_DIR = Path(".")    # music tracks live in the repo root alongside this script
 MUSIC_VOLUME = 0.20      # back down from 0.30
 MUSIC_START_OFFSET = 20  # skip the first 20s of the track (skip past quiet intros)
@@ -374,10 +375,13 @@ def build_ass(words, path):
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Cap,DejaVu Sans,{CAPTION_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
-        f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,1,2,40,40,"
-        f"{CAPTION_MARGIN_V},1\n\n"
-        "[Events]\n"
+        + (f"Style: Cap,Anton,{110 if W < H else 92},&H00FFFFFF,&H00FFFFFF,"
+           f"&H00121212,&H96000000,0,0,0,0,100,100,2,0,1,7,4,2,40,40,{CAPTION_MARGIN_V},1\n\n"
+           if STICK else
+           f"Style: Cap,DejaVu Sans,{CAPTION_FONT_SIZE},&H00FFFFFF,&H00FFFFFF,"
+           f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,1,2,40,40,"
+           f"{CAPTION_MARGIN_V},1\n\n")
+        + "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n"
     )
@@ -392,10 +396,10 @@ def build_ass(words, path):
                 if k == j:
                     # active word: gold + quick pop-in (borrowed from MoneyPrinterTurbo's
                     # animated subtitles); {\\r} resets back to the base style afterwards
-                    parts.append("{\\c&H0000D7FF&\\fscx118\\fscy118\\t(0,110,\\fscx100\\fscy100)}"
-                                 + clean_word(t2) + "{\\r}")
+                    parts.append("{\\c&H003FD2FF&\\fscx122\\fscy122\\t(0,120,\\fscx100\\fscy100)}"
+                                 + (clean_word(t2).upper() if STICK else clean_word(t2)) + "{\\r}")
                 else:
-                    parts.append(clean_word(t2))
+                    parts.append(clean_word(t2).upper() if STICK else clean_word(t2))
             lines.append(
                 f"Dialogue: 0,{ass_time(start)},{ass_time(stop)},Cap,,0,0,0,,"
                 + " ".join(parts))
@@ -814,7 +818,7 @@ def final_encode(joined, audio, total, ass_path):
     if pad > 0.05:
         vf.append(f"tpad=stop_mode=clone:stop_duration={pad:.2f}")
     if ass_path:
-        vf.append(f"ass={ass_path}")
+        vf.append(f"ass={ass_path}:fontsdir=fonts" if STICK else f"ass={ass_path}")
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-i", joined, "-i", audio,

@@ -14,16 +14,19 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import ai_scenes as A
 
-INK = (20, 20, 24)
-ACCENTS = [(226, 70, 56), (245, 184, 30), (38, 150, 96), (36, 98, 190), (150, 80, 190), (240, 120, 40)]
-TINTS = [(253, 252, 247), (247, 252, 246), (244, 249, 254), (254, 248, 242), (250, 246, 253), (255, 251, 238)]
-FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"]
-TRANSITIONS = ["slideleft", "circleopen", "wipeleft", "slideup", "smoothleft", "radial", "zoomin"]
+INK = (18, 18, 22)
+YELLOW = (255, 210, 63)
+CORAL = (255, 94, 91)
+WHITE = (255, 255, 255)
+ACCENTS = [YELLOW, CORAL, YELLOW, (70, 205, 235)]          # one signature colour + two helpers
+BGS = [(14, 18, 30), (24, 14, 34), (10, 28, 36), (30, 18, 20)]   # deep, cohesive dark backgrounds
+FONTS = [str(Path(__file__).with_name("fonts") / "Anton.ttf"),
+         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+TRANSITIONS = ["slideleft", "wipeleft", "circleopen", "smoothleft", "zoomin", "slideup"]
 CHUNK = 10   # scenes per xfade chain (keeps ffmpeg light on long videos)
 
 # angles in degrees from straight-down, + = toward screen right
@@ -95,8 +98,6 @@ def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
         d.line([sh, m, e], fill=INK, width=lw, joint="curve")
         d.ellipse([e[0] - lw * .9, e[1] - lw * .9, e[0] + lw * .9, e[1] + lw * .9], fill=INK)
     d.line([hip, neck], fill=INK, width=lw)
-    # accent scarf
-    d.line([(neck[0] - 18 * u, neck[1] + 10 * u), (neck[0] + 18 * u, neck[1] + 10 * u)], fill=accent, width=int(lw * 1.7))
     hr = 46 * u
     hc = (neck[0] + math.sin(math.radians(pose["head"])) * 20 * u, neck[1] - hr - 6 * u)
     d.ellipse([hc[0] - hr, hc[1] - hr, hc[0] + hr, hc[1] + hr], fill=(255, 255, 255, 255), outline=INK, width=lw)
@@ -143,35 +144,41 @@ def draw_figure(pose, mood, height_px, flip, phase, accent, fx, fxt):
         d.text((hc[0] + hr * 0.9, hc[1] - hr * 2.0 + bounce), "?", font=f, fill=accent, stroke_width=max(2, int(3 * u)),
                stroke_fill=INK)
     img = img.resize((side, side), Image.LANCZOS)
-    return img, int(470 * scale)
+    # white sticker outline so the figure reads on top of any picture
+    r = max(4, int(height_px * 0.022))
+    halo = img.split()[3].filter(ImageFilter.MaxFilter(2 * r + 1)).filter(ImageFilter.GaussianBlur(1.2))
+    out = Image.new("RGBA", img.size, (255, 255, 255, 0))
+    out.putalpha(halo)
+    out.paste((255, 255, 255, 255), (0, 0), halo)
+    out.alpha_composite(img)
+    return out, int(470 * scale)
 
 
 # ----------------------------------------------------------------------------- layout
 def layout(w, h, side):
-    """Rects: headline box, card box, figure (cx, floor_y, height), title font size."""
-    if w >= h:   # landscape 16:9
-        card_w = int(w * 0.64)
+    """Rects: headline box, card box, figure (cx, floor_y, height)."""
+    if w >= h:   # landscape 16:9: card + side column (headline on top, figure below)
+        card_w = int(w * 0.66)
         cx0 = int(w * 0.03) if side == 0 else int(w * 0.97) - card_w
-        card = (cx0, int(h * 0.235), cx0 + card_w, int(h * 0.80))
-        fig_cx = int(w * 0.835) if side == 0 else int(w * 0.165)
-        return dict(land=True, head=(int(w * 0.03), int(h * 0.03), int(w * 0.97), int(h * 0.21)), card=card,
-                    fig=(fig_cx, int(h * 0.80), int(h * 0.50)), fs=int(h * 0.072), cardshift=0)
-    card = (int(w * 0.045), int(h * 0.185), int(w * 0.955), int(h * 0.60))
+        card = (cx0, int(h * 0.07), cx0 + card_w, int(h * 0.835))
+        col0 = card[2] + int(w * 0.02) if side == 0 else int(w * 0.03)
+        col1 = int(w * 0.97) if side == 0 else card[0] - int(w * 0.02)
+        return dict(land=True, head=(col0, int(h * 0.07), col1, int(h * 0.38)), card=card, maxlines=4,
+                    fig=((col0 + col1) // 2, int(h * 0.835), int(h * 0.36)), fs=int(h * 0.12))
+    card = (int(w * 0.04), int(h * 0.175), int(w * 0.96), int(h * 0.705))
     fig_cx = int(w * 0.20) if side == 0 else int(w * 0.80)
-    return dict(land=False, head=(int(w * 0.05), int(h * 0.035), int(w * 0.95), int(h * 0.175)), card=card,
-                fig=(fig_cx, int(h * 0.745), int(h * 0.205)), fs=int(w * 0.095), cardshift=0)
+    return dict(land=False, head=(int(w * 0.05), int(h * 0.04), int(w * 0.95), int(h * 0.16)), card=card, maxlines=2,
+                fig=(fig_cx, int(h * 0.705) - int(h * 0.012), int(h * 0.225)), fs=int(h * 0.062))
 
 
-def paper(w, h, tint):
-    img = Image.new("RGB", (w, h), tint)
-    d = ImageDraw.Draw(img)
-    g = tuple(max(0, c - 22) for c in tint)
-    step = max(40, w // 24)
-    for x in range(0, w, step):
-        d.line([(x, 0), (x, h)], fill=g, width=2)
-    for y in range(0, h, step):
-        d.line([(0, y), (w, y)], fill=g, width=2)
-    return img
+def backdrop(w, h, tint):
+    """Clean flat colour with a soft centre glow (no grid, no texture)."""
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    r = np.sqrt(((xx - w / 2) / (w * 0.75)) ** 2 + ((yy - h / 2) / (h * 0.75)) ** 2)
+    k = np.clip(1.0 - r, 0, 1)[:, :, None] * 0.55
+    base = np.array(tint, np.float32)[None, None, :]
+    out = base * (1 + k * 0.9) + k * 10
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 
 
 def wrap(text, font, maxw, d, maxlines=2):
@@ -204,68 +211,100 @@ def cover(im, size, extra=1.0):
     return im.crop((x, y, x + tw, y + th))
 
 
+def headline_image(text, box, fs0, maxlines, accent):
+    """Bold Anton headline: white words, the longest word in the accent colour. Returns RGBA."""
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
+    text = text.upper()
+    fs = fs0
+    while True:
+        font = _font(fs)
+        lines = wrap(text, font, bw, probe, 12)
+        lh = int(fs * 1.12)
+        if (len(lines) <= maxlines and lh * len(lines) <= bh) or fs < fs0 * 0.45:
+            break
+        fs = int(fs * 0.92)
+    lines = lines[:maxlines]
+    key = max(text.split(), key=len) if text.split() else ""
+    img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    y = max(0, (bh - lh * len(lines)) // 2)
+    centre = not (box[2] - box[0] < 700 and False)
+    for ln in lines:
+        x = (bw - d.textlength(ln, font=font)) / 2
+        for wd in ln.split():
+            col = accent if wd == key else WHITE
+            d.text((x + 3, y + 5), wd, font=font, fill=(0, 0, 0, 150))
+            d.text((x, y), wd, font=font, fill=col)
+            x += d.textlength(wd + " ", font=font)
+        y += lh
+    return img
+
+
 class SceneArt:
-    """Static pieces of a scene prepared once: background, card art, card overlay."""
+    """Static pieces of a scene prepared once: background, card art, card overlay, headline."""
 
     def __init__(self, w, h, headline, art, accent, tint, side):
         self.w, self.h, self.side = w, h, side
         self.L = L = layout(w, h, side)
         x0, y0, x1, y1 = L["card"]
         self.cw, self.ch = x1 - x0, y1 - y0
-        bg = paper(w, h, tint)
-        d = ImageDraw.Draw(bg)
-        hx0, hy0, hx1, hy1 = L["head"]
-        fs = L["fs"]
-        while True:   # shrink until the whole headline fits in two lines
-            font = _font(fs)
-            lines = wrap(headline, font, hx1 - hx0, d, 9)
-            if len(lines) <= 2 or fs < L["fs"] * 0.6:
-                break
-            fs = int(fs * 0.92)
-        lines = lines[:2]
-        lh = int(fs * 1.12)
-        yy = hy0 + max(0, ((hy1 - hy0) - lh * len(lines) - 26) // 2)
-        for ln in lines:
-            tw = d.textlength(ln, font=font)
-            d.text((hx0 + ((hx1 - hx0) - tw) / 2, yy), ln, font=font, fill=INK)
-            yy += lh
-        d.rounded_rectangle([w * 0.5 - w * 0.17, yy + 4, w * 0.5 + w * 0.17, yy + 16], 6, fill=accent)
-        # hard offset shadow in the accent colour, then ground squiggle for the figure
-        off = max(10, int(w * 0.011))
-        d.rounded_rectangle([x0 + off, y0 + off, x1 + off, y1 + off], 30, fill=accent)
+        bg = backdrop(w, h, tint)
+        # soft drop shadow under the card
+        sh = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(sh).rounded_rectangle([x0, y0 + int(h * 0.012), x1, y1 + int(h * 0.012)], 38, fill=170)
+        sh = sh.filter(ImageFilter.GaussianBlur(max(10, int(h * 0.012))))
+        bg.paste((0, 0, 0), (0, 0), sh)
+        # soft contact shadow under the figure
         fcx, floor, fh = L["fig"]
-        d.line([(fcx - fh * 0.42, floor + 8), (fcx + fh * 0.42, floor + 8)], fill=INK, width=max(4, int(fh * 0.014)))
         self.bg = bg
-        self.mask = rounded_mask((self.cw, self.ch), 26)
+        self.mask = rounded_mask((self.cw, self.ch), 36)
         ov = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
-        ImageDraw.Draw(ov).rounded_rectangle([0, 0, self.cw - 1, self.ch - 1], 26, outline=INK + (255,),
-                                             width=max(8, int(w * 0.009)))
+        ImageDraw.Draw(ov).rounded_rectangle([0, 0, self.cw - 1, self.ch - 1], 36, outline=accent + (255,),
+                                             width=max(5, int(w * 0.005)))
         self.ov = ov
+        hb = L["head"]
+        self.head = headline_image(headline, hb, L["fs"], L["maxlines"], accent)
+        self.head_pos = (hb[0], hb[1])
         if art is None:
-            flat = Image.new("RGB", (self.cw, self.ch), accent)
+            flat = Image.new("RGB", (self.cw, self.ch), tint)
             fd = ImageDraw.Draw(flat)
-            bf = _font(int(self.ch * 0.5))
-            fd.text((self.cw / 2, self.ch / 2), "?", font=bf, fill=(255, 255, 255), anchor="mm")
+            fd.text((self.cw / 2, self.ch / 2), "?", font=_font(int(self.ch * 0.5)), fill=accent, anchor="mm")
             art = flat
-        self.big = cover(art, (self.cw, self.ch), 1.22)
+        self.big = cover(art, (self.cw, self.ch), 1.25)
 
     def card_at(self, t, span, idx):
-        """Card picture (RGBA-less RGB) with slow camera push + pan."""
+        """Card picture with a slow camera move that varies per scene."""
         k = min(1.0, t / max(span, 0.5))
-        z = 1.0 + 0.14 * (k if idx % 2 == 0 else 1 - k)
         bw, bh = self.big.size
+        mode = idx % 5
+        if mode == 0:      # push in
+            z, px, py = 1.0 + 0.16 * k, 0.0, 0.0
+        elif mode == 1:    # pull out
+            z, px, py = 1.16 - 0.16 * k, 0.0, 0.0
+        elif mode == 2:    # drift right while slightly zoomed
+            z, px, py = 1.12, (k - 0.5), 0.0
+        elif mode == 3:    # drift left
+            z, px, py = 1.12, (0.5 - k), 0.0
+        else:              # diagonal push
+            z, px, py = 1.0 + 0.12 * k, (k - 0.5) * 0.6, (0.5 - k) * 0.6
         ww, wh = bw / z, bh / z
-        pan = (k - 0.5) * (1 if idx % 3 else -1)
-        cx = bw / 2 + pan * (bw - ww) * 0.45
-        cy = bh / 2
+        cx = bw / 2 + px * (bw - ww)
+        cy = bh / 2 + py * (bh - wh)
         box = (cx - ww / 2, cy - wh / 2, cx + ww / 2, cy + wh / 2)
-        art = self.big.resize((self.cw, self.ch), Image.BILINEAR, box=box)
-        return art
+        return self.big.resize((self.cw, self.ch), Image.BILINEAR, box=box)
 
 
 def draw_progress(frame, w, h, frac, accent):
     d = ImageDraw.Draw(frame)
-    d.rectangle([0, 0, int(w * frac), max(6, h // 160)], fill=accent)
+    d.rectangle([0, h - max(6, h // 150), int(w * frac), h], fill=accent)
+
+
+def _back(t):
+    """Ease-out-back: quick pop with a small overshoot."""
+    t = max(0.0, min(1.0, t))
+    c1, c3 = 1.70158, 2.70158
+    return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
 
 
 # ----------------------------------------------------------------------------- scene render
@@ -274,16 +313,16 @@ def render_scene(sa, keys, mood, fx, accent, span, dest, w, h, fps, idx, prog0=N
     L = sa.L
     x0, y0, x1, y1 = L["card"]
     fcx, floor, fh = L["fig"]
-    flip = sa.side == 1 if not L["land"] else sa.side == 0   # face the card
+    flip = (sa.side == 1) if not L["land"] else (sa.side == 0)   # face the card / the story
     cache = {}
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
            "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", str(dest)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    off_x = (-1 if (fcx < w / 2) else 1) * w * 0.35       # figure slides in from its own edge
     try:
         for f in range(frames):
             t = f / fps
-            # which pose keyframe is active
             ki = 0
             for j, (kt, _) in enumerate(keys):
                 if t >= kt:
@@ -291,28 +330,27 @@ def render_scene(sa, keys, mood, fx, accent, span, dest, w, h, fps, idx, prog0=N
             kt, kp = keys[ki]
             prev = keys[ki - 1][1] if ki > 0 else POSES["idle"]
             tm = t - kt
-            pose = _mix(prev, kp, tm / 0.45)
+            pose = dict(_mix(prev, kp, tm / 0.45))
             ph = round(((t / 1.6) % 1.0) * 12) / 12
             sway = math.sin(ph * 2 * math.pi) * 3
-            pose = dict(pose)
             pose["la1"] += sway
             pose["ra1"] -= sway
             q = round(min(tm, 0.45) / 0.45 * 6)
+            fx_on = fx if (fx in ("spark", "q") or tm < 1.7) else None
             fxt = round(tm * 10) / 10 if tm < 1.7 else 9.0
-            key = (ki, q, ph, mood, fx if fxt < 1.7 or fx in ("spark", "q") else None, fxt if fxt < 1.7 else 9.0)
+            key = (ki, q, ph, mood, fx_on, fxt)
             if key not in cache:
-                cache[key] = draw_figure(pose, MOODS[mood], fh, flip, ph, accent,
-                                         fx if (fxt < 1.7 or fx in ("spark", "q")) else None, fxt)
+                cache[key] = draw_figure(pose, MOODS[mood], fh, flip, ph, accent, fx_on, fxt)
                 if len(cache) > 400:
                     cache.pop(next(iter(cache)))
             fig, feet = cache[key]
             frame = sa.bg.copy()
             art = sa.card_at(t, span, idx)
-            pop = _ease(t / 0.32)
-            if pop < 1.0:
+            pop = _back(t / 0.42)
+            if abs(pop - 1.0) > 0.002:
                 tile = art.convert("RGBA")
                 tile.paste(sa.ov, (0, 0), sa.ov)
-                s = 0.82 + 0.18 * pop
+                s = 0.86 + 0.14 * pop
                 tw, th = int(sa.cw * s), int(sa.ch * s)
                 tile = tile.resize((tw, th), Image.BILINEAR)
                 m = sa.mask.resize((tw, th), Image.BILINEAR)
@@ -320,9 +358,20 @@ def render_scene(sa, keys, mood, fx, accent, span, dest, w, h, fps, idx, prog0=N
             else:
                 frame.paste(art, (x0, y0), sa.mask)
                 frame.paste(sa.ov, (x0, y0), sa.ov)
-            # figure drops in with a little hop
-            hop = (1 - pop) * -fh * 0.12 if pop < 1.0 else 0
-            frame.paste(fig, (int(fcx - fig.width / 2), int(floor - feet + hop)), fig)
+            # headline: quick scale-slam
+            hp = _ease(t / 0.22)
+            hd = sa.head
+            if hp < 1.0:
+                s = 1.28 - 0.28 * hp
+                hd = hd.resize((max(1, int(hd.width * s)), max(1, int(hd.height * s))), Image.BILINEAR)
+                px = sa.head_pos[0] + (sa.head.width - hd.width) // 2
+                py = sa.head_pos[1] + (sa.head.height - hd.height) // 2
+                frame.paste(hd, (px, py), hd)
+            else:
+                frame.paste(hd, sa.head_pos, hd)
+            # figure slides in from the side then settles
+            slide = (1 - _ease(t / 0.4)) * off_x
+            frame.paste(fig, (int(fcx - fig.width / 2 + slide), int(floor - feet)), fig)
             if prog0 is not None:
                 draw_progress(frame, w, h, prog0 + (prog1 - prog0) * (f / frames), accent)
             proc.stdin.write(np.asarray(frame).tobytes())
@@ -441,7 +490,7 @@ def build(script, title, words, length, work, w, h, fps):
     segs, spans = [], []
     total = scenes[-1]["t1"]
     for i, (sc, dt) in enumerate(zip(scenes, det)):
-        accent, tint = ACCENTS[i % len(ACCENTS)], TINTS[i % len(TINTS)]
+        accent, tint = ACCENTS[i % len(ACCENTS)], BGS[i % len(BGS)]
         side = i % 2
         sa = SceneArt(w, h, dt["headline"], arts[i], accent, tint, side)
         end_of_chunk = (i % CHUNK == CHUNK - 1) or i == len(scenes) - 1
