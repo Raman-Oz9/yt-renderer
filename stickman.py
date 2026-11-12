@@ -1,7 +1,7 @@
 """Stick-figure storytelling renderer v5 "ink" (only used when VISUAL_STYLE=stickman).
 
-Every scene is an AI-drawn bold black-ink stickman doodle (thick marker limbs, round white head, a few
-props, yellow accent, speed lines) on clean white / pale yellow, shown BIG with a lively camera move.
+Every scene is a bold black-ink stickman (drawn in code: thick limbs, round white head) acting next to big doodle
+props (inkdraw.py icon library) on clean white / pale yellow, with a lively camera move.
 Headline with a yellow highlighter swipe, original gold-word captions on top (burned by render.py).
 Vertical 9:16 for Shorts, 16:9 for long videos. The cinematic renderer never imports this module.
 """
@@ -13,9 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import requests
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 import ai_scenes as A
+import inkdraw as K
 
 INK = (18, 18, 22)
 YELLOW = (255, 205, 40)
@@ -25,14 +26,6 @@ FONTS = [str(Path(__file__).with_name("fonts") / "Anton.ttf"),
          "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
 TRANSITIONS = ["slideleft", "wipeleft", "circleopen", "smoothleft", "zoomin", "slideup", "fadewhite"]
 CHUNK = 10   # scenes per xfade chain (keeps ffmpeg light on long videos)
-
-ART_STYLE = ("hand-drawn doodle cartoon in the style of a bold black ink stick figure comic: ONE simple stick figure character "
-             "with a round white head, tiny dot eyes and a small smile, thick solid black marker arms, legs and body, "
-             "expressive exaggerated pose acting out the scene, a few simple props drawn with clean black outlines, "
-             "a small touch of bright yellow as the only colour accent, light grey speed lines and small spark lines, "
-             "sketchy ground shadow line, clean pure white background, lots of empty white space around, centred, "
-             "no text, no letters, no numbers, no watermark")
-
 
 def _font(size):
     for f in FONTS:
@@ -54,9 +47,9 @@ def _back(t):
 
 # ----------------------------------------------------------------------------- layout
 def layout(w, h):
-    if w >= h:   # landscape: headline column on the left, picture big on the right
-        return dict(land=True, head=(int(w * 0.04), int(h * 0.12), int(w * 0.31), int(h * 0.62)), maxlines=5,
-                    box=(int(w * 0.30), int(h * 0.03), int(w * 0.99), int(h * 0.90)), fs=int(h * 0.12))
+    if w >= h:   # landscape: stage is nearly the whole frame, headline top-centre
+        return dict(land=True, head=(int(w * 0.10), int(h * 0.03), int(w * 0.90), int(h * 0.165)), maxlines=1,
+                    box=(0, int(h * 0.19), w, int(h * 0.90)), fs=int(h * 0.10))
     return dict(land=False, head=(int(w * 0.05), int(h * 0.04), int(w * 0.95), int(h * 0.145)), maxlines=2,
                 box=(0, int(h * 0.14), w, int(h * 0.76)), fs=int(h * 0.07))
 
@@ -102,100 +95,160 @@ def headline_image(text, box, fs0, maxlines):
             pos.append((wd, x, y))
             x += d.textlength(wd + " ", font=font)
         y += lh
-    for wd, x, y in pos:   # highlighter first
+    for wd, x, y in pos:
         if wd == key:
             tw = d.textlength(wd, font=font)
-            d.rounded_rectangle([x - fs * 0.12, y + fs * 0.34, x + tw + fs * 0.12, y + fs * 0.98], int(fs * 0.12), fill=YELLOW)
+            d.rounded_rectangle([x - fs * 0.10, y + fs * 0.30, x + tw + fs * 0.10, y + fs * 0.98], int(fs * 0.12), fill=YELLOW)
     for wd, x, y in pos:
         d.text((x, y), wd, font=font, fill=INK)
     return img
 
 
-def feather(size, edge=0.06):
-    """White at the borders, black inside: used with 'lighter' so picture edges melt into the page."""
-    w, h = size
-    fx = np.minimum(np.arange(w), w - 1 - np.arange(w)) / max(1.0, edge * w)
-    fy = np.minimum(np.arange(h), h - 1 - np.arange(h)) / max(1.0, edge * h)
-    m = np.clip(np.minimum(fy[:, None], fx[None, :]), 0, 1)
-    return Image.fromarray(((1 - m) * 255).astype(np.uint8)).convert("RGB")
-
-
 class SceneArt:
-    def __init__(self, w, h, headline, art, tint, idx):
-        self.w, self.h, self.idx = w, h, idx
+    """One scene = stage with: soft blob, big main prop, small second prop, stickman hero, ground line, decorations."""
+
+    def __init__(self, w, h, headline, icons, tint, idx, side):
+        self.w, self.h, self.idx, self.side = w, h, idx, side
         self.L = L = layout(w, h)
         bx0, by0, bx1, by1 = L["box"]
         self.bw, self.bh = bx1 - bx0, by1 - by0
-        self.bg = Image.new("RGB", (w, h), tint)
+        bw, bh = self.bw, self.bh
+        self.tint = tint
         hb = L["head"]
         self.head = headline_image(headline, hb, L["fs"], L["maxlines"])
         self.head_pos = (hb[0], hb[1])
-        if art is None:
-            art = Image.new("RGB", (768, 768), WHITE)
-            ImageDraw.Draw(art).text((384, 384), "?", font=_font(420), fill=INK, anchor="mm")
-        arr = np.asarray(art.convert("RGB")).astype(np.float32)
-        arr = np.clip(arr * (255.0 / 236.0), 0, 255)          # lift near-white to pure white
-        art = Image.fromarray(arr.astype(np.uint8))
-        a = max(art.size)
-        self.art = art.resize((a * 2, a * 2), Image.LANCZOS) if a < 1500 else art
-        self.edge = feather((self.bw, self.bh))
-        # how big the picture sits: art side = box height * 1.32 (subject fills the frame)
-        self.scale = (self.bh * 1.38) / self.art.height
+        land = L["land"]
+        # stage geometry -----------------------------------------------------------------
+        self.fh = int(bh * (0.80 if land else 0.60))                         # figure height
+        self.floor = int(bh * (0.95 if land else 0.93))
+        self.fig_cx = int(bw * ((0.25 if side == 0 else 0.75) if land else (0.30 if side == 0 else 0.70)))
+        opp = 1 - side
+        main_px = int(bh * 0.60) if land else int(bw * 0.50)
+        self.main = K.render_icon(icons[0], main_px)
+        self.main_c = (int(bw * ((0.72 if opp == 1 else 0.28) if land else (0.70 if opp == 1 else 0.30))),
+                       int(bh * (0.42 if land else 0.27)))
+        self.second = None
+        if len(icons) > 1:
+            sp = int(bh * 0.30) if land else int(bw * 0.24)
+            self.second = K.render_icon(icons[1], sp)
+            self.second_c = (int(self.fig_cx + (0.02 * bw if side else -0.02 * bw)), int(bh * (0.15 if land else 0.12)))
+            if land:
+                self.second_c = (int(bw * (0.46 if side == 0 else 0.54)), int(bh * 0.17))
+        # pale blob behind the action
+        blob = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        r = int(min(bw, bh) * (0.46 if land else 0.44))
+        bd = ImageDraw.Draw(blob)
+        bcol = (255, 244, 196, 255) if tint == (255, 255, 255) else (255, 252, 236, 255)
+        cx, cy = int(bw * 0.5), int(bh * 0.52)
+        bd.ellipse([cx - int(r * (1.25 if land else 1.0)), cy - r, cx + int(r * (1.25 if land else 1.0)), cy + r], fill=bcol)
+        self.blob = blob
+        # ground line + shadow
+        ground = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(ground)
+        gw = int(self.fh * 0.62)
+        gd.ellipse([self.fig_cx - gw, self.floor - int(self.fh * 0.03), self.fig_cx + gw, self.floor + int(self.fh * 0.05)], fill=(205, 205, 210, 255))
+        gd.line([(self.fig_cx - gw * 1.1, self.floor + int(self.fh * 0.03)), (self.fig_cx + gw * 1.1, self.floor + int(self.fh * 0.03))],
+                fill=INK + (255,), width=max(4, int(self.fh * 0.014)))
+        self.ground = ground
+        back = Image.new("RGB", (bw, bh), tint)
+        back.paste(blob, (0, 0), blob)
+        back.paste(ground, (0, 0), ground)
+        self.back = back
+        self.lines = K.speed_lines(int(bw * 0.30), int(self.fh * 0.5), side)
+        self.sp = K.sparkle(max(24, int(bw * 0.05)))
+        self.sp2 = K.sparkle(max(16, int(bw * 0.032)))
+        self.rot_cache = {}
 
-    def picture_at(self, t, span):
-        k = min(1.0, t / max(span, 0.5))
-        i = self.idx
-        mode = i % 4
-        if mode == 0:
-            z, px, py = 1.0 + 0.16 * k, 0.0, 0.0
-        elif mode == 1:
-            z, px, py = 1.16 - 0.16 * k, 0.0, 0.0
-        elif mode == 2:
-            z, px, py = 1.08 + 0.06 * k, (k - 0.5) * 0.5, 0.0
-        else:
-            z, px, py = 1.08 + 0.06 * k, (0.5 - k) * 0.5, 0.0
-        ww, wh = self.bw / self.scale / z, self.bh / self.scale / z
-        aw, ah = self.art.size
-        ww, wh = min(ww, aw), min(wh, ah)
-        cx = aw / 2 + px * (aw - ww) * 0.5
-        cy = ah / 2 + py * (ah - wh)
-        box = (cx - ww / 2, cy - wh / 2, cx + ww / 2, cy + wh / 2)
-        pic = self.art.resize((self.bw, self.bh), Image.BILINEAR, box=box)
-        return ImageChops.lighter(pic, self.edge)
+    def rotated(self, key, img, ang):
+        k = (key, round(ang))
+        if k not in self.rot_cache:
+            self.rot_cache[k] = img.rotate(round(ang), Image.BICUBIC, expand=True)
+            if len(self.rot_cache) > 300:
+                self.rot_cache.pop(next(iter(self.rot_cache)))
+        return self.rot_cache[k]
 
 
 def draw_progress(frame, w, h, frac):
     ImageDraw.Draw(frame).rectangle([0, 0, int(w * frac), max(6, h // 160)], fill=YELLOW)
 
 
+def paste_center(stage, img, cx, cy, scale=1.0):
+    if scale != 1.0:
+        img = img.resize((max(2, int(img.width * scale)), max(2, int(img.height * scale))), Image.BILINEAR)
+    stage.paste(img, (int(cx - img.width / 2), int(cy - img.height / 2)), img)
+
+
 # ----------------------------------------------------------------------------- scene render
-def render_scene(sa, span, dest, w, h, fps, prog0=None, prog1=None):
+def render_scene(sa, keys, mood, fx, span, dest, w, h, fps, prog0=None, prog1=None):
     frames = max(2, int(round(span * fps)))
     L = sa.L
     bx0, by0, bx1, by1 = L["box"]
+    bw, bh = sa.bw, sa.bh
+    flip = (sa.side == 1)       # face toward the middle of the frame
+    cache = {}
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
            "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
            "-pix_fmt", "yuv420p", str(dest)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    off_x = (-1 if sa.fig_cx < bw / 2 else 1) * bw * 0.6
+    base = Image.new("RGB", (w, h), sa.tint)
     try:
         for f in range(frames):
             t = f / fps
-            frame = sa.bg.copy()
-            pic = sa.picture_at(t, span)
-            pop = _back(t / 0.40)
-            region = frame.crop((bx0, by0, bx1, by1))
-            if abs(pop - 1.0) > 0.002:   # picture pops in with a small overshoot
-                s = 0.80 + 0.20 * pop
-                tw, th = max(2, int(sa.bw * s)), max(2, int(sa.bh * s))
-                pic = pic.resize((tw, th), Image.BILINEAR)
-                tile = Image.new("RGB", (sa.bw, sa.bh), sa.bg.getpixel((0, 0)))
-                tile.paste(ImageChops.multiply(tile.crop(((sa.bw - tw) // 2, (sa.bh - th) // 2,
-                                                          (sa.bw - tw) // 2 + tw, (sa.bh - th) // 2 + th)), pic),
-                           ((sa.bw - tw) // 2, (sa.bh - th) // 2))
-                out = tile
-            else:
-                out = ImageChops.multiply(region, pic)
-            frame.paste(out, (bx0, by0))
+            ki = 0
+            for j, (kt, _) in enumerate(keys):
+                if t >= kt:
+                    ki = j
+            kt, kp = keys[ki]
+            prev = keys[ki - 1][1] if ki > 0 else K.POSES["idle"]
+            tm = t - kt
+            pose = dict(K.mix(prev, kp, tm / 0.40))
+            ph = round(((t / 1.5) % 1.0) * 12) / 12
+            sway = math.sin(ph * 2 * math.pi) * 4
+            pose["la1"] += sway
+            pose["ra1"] -= sway
+            q = round(min(tm, 0.40) / 0.40 * 6)
+            fx_on = fx if (fx in ("spark", "q") or tm < 1.7) else None
+            fxt = round(tm * 10) / 10 if tm < 1.7 else 9.0
+            key = (ki, q, ph, mood, fx_on, fxt)
+            if key not in cache:
+                cache[key] = K.draw_figure(pose, K.MOODS[mood], sa.fh, flip, ph, fx_on, fxt)
+                if len(cache) > 400:
+                    cache.pop(next(iter(cache)))
+            fig, feet = cache[key]
+            stage = sa.back.copy()
+            # speed lines trail behind the figure while it enters / runs
+            if t < 0.55 or keys[ki][1] is K.POSES["run"]:
+                lx = 0 if sa.side == 0 else bw - sa.lines.width
+                stage.paste(sa.lines, (lx, int(sa.floor - sa.fh * 0.8)), sa.lines)
+            # props: pop with overshoot, then a slow wiggle
+            p1 = _back((t - 0.10) / 0.45)
+            wig = round(math.sin(t * 2.0) * 4)
+            m = sa.rotated(("m", sa.idx), sa.main, wig)
+            paste_center(stage, m, sa.main_c[0], sa.main_c[1] + math.sin(t * 2.4) * bh * 0.008, max(0.05, p1))
+            if sa.second is not None:
+                p2 = _back((t - 0.40) / 0.45)
+                s2 = sa.rotated(("s", sa.idx), sa.second, -wig)
+                paste_center(stage, s2, sa.second_c[0], sa.second_c[1], max(0.05, p2))
+            # sparkles around the main prop
+            pulse = 0.75 + 0.25 * math.sin(t * 5)
+            if t > 0.5:
+                mx, my = sa.main_c
+                off = sa.main.width * 0.55
+                paste_center(stage, sa.sp, mx + off, my - off * 0.6, pulse)
+                paste_center(stage, sa.sp2, mx - off * 0.9, my + off * 0.5, 1.6 - pulse)
+            # figure slides in from the edge and settles
+            slide = (1 - _ease(t / 0.38)) * off_x
+            stage.paste(fig, (int(sa.fig_cx - fig.width / 2 + slide), int(sa.floor - feet)), fig)
+            # camera push on the whole stage
+            k = min(1.0, t / max(span, 0.5))
+            z = 1.0 + 0.07 * (k if sa.idx % 2 == 0 else 1 - k)
+            ww, wh = bw / z, bh / z
+            cx = bw / 2 + (k - 0.5) * (bw - ww) * (0.6 if sa.idx % 3 == 0 else 0.0)
+            stage = stage.resize((bw, bh), Image.BILINEAR, box=(cx - ww / 2, (bh - wh) / 2 + (bh - wh) * 0.1,
+                                                                 cx + ww / 2, (bh - wh) / 2 + wh + (bh - wh) * 0.1))
+            frame = base.copy()
+            frame.paste(stage, (bx0, by0))
             hp = _ease(t / 0.22)
             hd = sa.head
             if hp < 1.0:
@@ -221,52 +274,50 @@ def plan_details(scenes, title):
     n = len(scenes)
     fb = []
     for i, sc in enumerate(scenes):
+        icons, pose, mood = K.guess_from_text(sc["text"], i)
         words = re.findall(r"[A-Za-z0-9'-]+", sc["text"])
-        fb.append({"headline": " ".join(words[:4]).upper(),
-                   "scene": f"the stick figure reacting to this: {' '.join(words[:14])}"})
+        fb.append({"headline": " ".join(words[:4]).upper(), "icons": icons, "pose": pose,
+                   "pose2": K.POSE_KEYS[(K.POSE_KEYS.index(pose) + 3) % len(K.POSE_KEYS)], "mood": mood})
     if not A.GEMINI_KEY:
         return fb
     listing = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(scenes))
-    ask = (f"Plan a stick-figure storytelling video titled \"{title}\". The same simple stick figure narrator-hero appears in every "
-           "scene. For each numbered narration line return an object with: "
-           "\"headline\" (2-4 word ALL-CAPS key phrase from the line, no punctuation), "
-           "\"scene\" (what the stick figure is DOING in this moment plus 1-3 concrete props that show the idea, max 30 words, "
-           "e.g. 'the stick figure peering into a glowing glass jar of salt crystals, a giant salt shaker beside him'; "
-           "emotion and action must match the line; every scene a different striking action and different props; "
-           "no text or numbers in the picture). "
+    ask = (f"Plan a stick-figure storytelling video titled \"{title}\". The same stick-figure hero appears in every scene next to big "
+           "doodle icons. For each numbered narration line return an object with: "
+           "\"headline\" (2-4 word ALL-CAPS hook phrase taken from the line, no punctuation), "
+           f"\"icons\" (1 or 2 names from this list that best show the idea, most important first: {', '.join(K.ICON_NAMES)}), "
+           f"\"pose\" and \"pose2\" (each one of: {', '.join(K.POSE_KEYS)}), "
+           "and \"mood\" (happy, neutral, shocked or sad). Match emotion and action to the line and vary everything between scenes. "
            f"Return ONLY a JSON array of exactly {n} objects in order.\n\n{listing}")
-    for model in A.TEXT_MODELS:
-        try:
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                headers={"x-goog-api-key": A.GEMINI_KEY},
-                json={"contents": [{"parts": [{"text": ask}]}],
-                      "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 16384}},
-                timeout=120)
-            if r.status_code != 200:
-                A.note(f"Stickman planner {model}: {r.status_code}")
-                continue
-            arr = A.parse_json_list(r.json()["candidates"][0]["content"]["parts"][0]["text"])
-            if isinstance(arr, list) and len(arr) == n:
-                out = []
-                for o, f in zip(arr, fb):
-                    o = o if isinstance(o, dict) else {}
-                    out.append({"headline": str(o.get("headline") or f["headline"]).upper()[:44],
-                                "scene": str(o.get("scene") or f["scene"])[:240]})
-                return out
-        except Exception as exc:
-            A.note(f"Stickman planner {model} failed: {exc}")
+    import time as _t
+    for attempt in range(3):
+        for model in A.TEXT_MODELS:
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    headers={"x-goog-api-key": A.GEMINI_KEY},
+                    json={"contents": [{"parts": [{"text": ask}]}],
+                          "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 16384}},
+                    timeout=120)
+                if r.status_code != 200:
+                    A.note(f"Stickman planner {model}: {r.status_code}")
+                    continue
+                arr = A.parse_json_list(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+                if isinstance(arr, list) and len(arr) == n:
+                    out = []
+                    for o, f in zip(arr, fb):
+                        o = o if isinstance(o, dict) else {}
+                        ic = [x for x in (o.get("icons") or []) if x in K.ICONS][:2] or f["icons"]
+                        p1 = o.get("pose") if o.get("pose") in K.POSES else f["pose"]
+                        p2 = o.get("pose2") if o.get("pose2") in K.POSES else f["pose2"]
+                        mood = o.get("mood") if o.get("mood") in K.MOODS else f["mood"]
+                        out.append({"headline": str(o.get("headline") or f["headline"]).upper()[:44], "icons": ic,
+                                    "pose": p1, "pose2": p2, "mood": mood})
+                    return out
+            except Exception as exc:
+                A.note(f"Stickman planner {model} failed: {exc}")
+        _t.sleep(4)
+    A.note("Stickman planner unavailable: using keyword fallback")
     return fb
-
-
-def get_art(desc, dest, land):
-    src = A.make_image(f"{desc}. {ART_STYLE}", dest)
-    if not src:
-        return None
-    try:
-        return Image.open(dest).convert("RGB")
-    except Exception:
-        return None
 
 
 # ----------------------------------------------------------------------------- joining
@@ -293,38 +344,25 @@ def join_chunk(segs, spans, dest, k0):
 # ----------------------------------------------------------------------------- main entry
 def build(script, title, words, length, work, w, h, fps):
     land = w >= h
-    A._BUDGET_END[0] = A.time.time() + (80 if land else 34) * 60
     A.MIN_SCENE, A.MAX_SCENE = (4.5, 8.0) if land else ((3.0, 5.5) if length > 80 else (2.4, 4.8))
     scenes = A.plan_scenes(script, words, length)
     A.note(f"Stickman scenes planned: {len(scenes)} ({'landscape' if land else 'vertical'})")
     det = plan_details(scenes, title)
     work = Path(work)
-
-    def job(i):
-        return get_art(det[i]["scene"], work / f"stk_art_{i}.img", land)
-
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        arts = list(ex.map(job, range(len(scenes))))
-    ok = sum(1 for a in arts if a is not None)
-    A.note(f"Stickman art: {ok}/{len(scenes)} generated")
-    if ok == 0:
-        return None
-    last = None
-    for i, a in enumerate(arts):
-        if a is None and last is not None:
-            arts[i] = last.transpose(Image.FLIP_LEFT_RIGHT)   # reuse (mirrored) rather than a blank page
-        elif a is not None:
-            last = a
-
     segs, spans = [], []
     total = scenes[-1]["t1"]
     for i, (sc, dt) in enumerate(zip(scenes, det)):
-        sa = SceneArt(w, h, dt["headline"], arts[i], BGS[i % len(BGS)], i)
+        sa = SceneArt(w, h, dt["headline"], dt["icons"], BGS[i % len(BGS)], i, i % 2)
         end_of_chunk = (i % CHUNK == CHUNK - 1) or i == len(scenes) - 1
         base = sc["t1"] - sc["t0"]
         span = base + (0 if end_of_chunk else A.OVERLAP)
+        keys = [(0.0, K.POSES[dt["pose"]])]
+        if base > 4.6:
+            keys.append((base * 0.5, K.POSES[dt["pose2"]]))
+        fx = K.FX_FOR_POSE.get(dt["pose"]) or ("spark" if dt["mood"] == "happy" else None)
         seg = work / f"stkseg_{i}.mp4"
-        render_scene(sa, span, seg, w, h, fps, (sc["t0"] / total) if land else None, (sc["t1"] / total) if land else None)
+        render_scene(sa, keys, dt["mood"], fx, span, seg, w, h, fps,
+                     (sc["t0"] / total) if land else None, (sc["t1"] / total) if land else None)
         segs.append(seg)
         spans.append(base)
         if i % 5 == 0:
