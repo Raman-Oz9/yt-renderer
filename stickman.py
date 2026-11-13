@@ -201,7 +201,7 @@ def minimal(im, tod="day", bg=False):
     base = ink + (paper - ink) * lvl
     acc = np.where((R >= B)[..., None], np.array(ACC_WARM, np.float32), np.array(ACC_COOL, np.float32))
     acc = acc * np.clip(0.62 + 0.5 * L, 0.6, 1.05)[..., None]
-    mask = ((sat > (0.72 if bg else 0.42)) & (mx > 100))[..., None]
+    mask = ((sat > (0.72 if bg else 0.42)) & (mx > (100 if bg else 150)))[..., None]
     out = np.where(mask, acc, base)
     if mode == "RGBA":
         out = np.concatenate([out, arr[..., 3:4]], -1)
@@ -327,7 +327,7 @@ class Scene:
         self.shot = spec.get("shot") if spec.get("shot") in ("wide", "medium", "close") else "medium"
         if self.n == 2 and self.shot == "close":
             self.shot = "medium"
-        shot_k = {"wide": 0.62, "medium": 0.88, "close": 1.55 if land else 1.5}[self.shot]
+        shot_k = {"wide": 0.62, "medium": 0.88, "close": 1.3 if land else 1.2}[self.shot]
         hero_h = (0.58 if land else 0.46) * self.Hc * (1.0 if self.n == 1 else 0.84) * shot_k
         hero_h = min(hero_h, self.Hc * 0.9)
         self.persp = setting in ("street", "city", "village", "field")
@@ -340,6 +340,8 @@ class Scene:
         self.chars = []
         if self.n == 1:
             xs = [self.Wd * ((0.34 if side == 0 else 0.66) if land else (0.38 if side == 0 else 0.62))]
+            if self.shot == "close":
+                xs = [self.Wd * 0.5]
         else:
             xs = [self.Wd * (0.30 if land else 0.31), self.Wd * (0.70 if land else 0.69)]
         for k, c in enumerate(chars):
