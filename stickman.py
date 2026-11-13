@@ -341,7 +341,8 @@ class Scene:
         for i, name in enumerate(ground):
             x, k, behind = slots[i]
             sz = hh * S.SCALE.get(name, 1.0) * k * (0.75 if self.n == 2 and i == 0 else 1.0)
-            sz = min(sz, self.Hc * 0.92)
+            big = name in ("castle", "tower", "windmill", "pyramid", "mountain", "volcano", "house", "palm", "dino", "pine", "tree")
+            sz = min(sz, self.Hc * (0.9 if big else 0.55))
             im, ax, ay = prop_layer(name, sz, ow, seed + i)
             maxw = self.Wd * (0.55 if name in ("army", "crowd") else 0.5)
             if self.n == 1 and i == 0:
@@ -368,7 +369,7 @@ class Scene:
         self.fire = next((p for p in self.props if p["name"] == "campfire"), None)
         # ---- label
         self.label = None
-        lab = (spec.get("label") or "").strip()
+        lab = (spec.get("label") or "").strip() if self.shot != "close" else ""
         if lab:
             lab = lab[:28]
             ws = lab.split()
