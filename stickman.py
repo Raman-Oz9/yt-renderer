@@ -13,6 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import requests
+try:
+    import cv2
+except Exception:   # PIL fallback (slower)
+    cv2 = None
 from PIL import Image, ImageDraw
 
 import ai_scenes as A
@@ -115,37 +119,87 @@ def speed_layer(R, ow, side):
     return im if side > 0 else im.transpose(Image.FLIP_LEFT_RIGHT)
 
 
-def paste_c(dst, im, cx, cy, scale=1.0, alpha=1.0):
-    if scale <= 0.02 or im is None:
+def comp(dst, im, x, y):
+    """alpha-composite RGBA im onto RGBA dst at (x, y) with clipping."""
+    x, y = int(x), int(y)
+    sx0, sy0 = max(0, -x), max(0, -y)
+    sx1, sy1 = min(im.width, dst.width - x), min(im.height, dst.height - y)
+    if sx1 <= sx0 or sy1 <= sy0:
         return
-    if abs(scale - 1.0) > 0.01:
-        im = im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))), Image.BILINEAR)
+    piece = im.crop((sx0, sy0, sx1, sy1)) if (sx0, sy0, sx1, sy1) != (0, 0, im.width, im.height) else im
+    dst.alpha_composite(piece, dest=(x + sx0, y + sy0))
+
+
+def paste_c(dst, im, cx, cy, scale=1.0, alpha=1.0, sx=None, sy=None):
+    sx = scale if sx is None else sx
+    sy = scale if sy is None else sy
+    if im is None or sx <= 0.02 or sy <= 0.02:
+        return
+    if abs(sx - 1.0) > 0.01 or abs(sy - 1.0) > 0.01:
+        im = im.resize((max(1, int(im.width * sx)), max(1, int(im.height * sy))), Image.BILINEAR)
     if alpha < 0.99:
         a = im.getchannel("A").point(lambda v: int(v * alpha))
         im = im.copy()
         im.putalpha(a)
-    dst.paste(im, (int(cx - im.width / 2), int(cy - im.height / 2)), im)
+    comp(dst, im, cx - im.width / 2, cy - im.height / 2)
 
 
-# ----------------------------------------------------------------------------- scene
+def shadow_layer(wpx):
+    im = Image.new("RGBA", (int(wpx), max(4, int(wpx * 0.16))), (0, 0, 0, 0))
+    ImageDraw.Draw(im).ellipse((0, 0, im.width - 1, im.height - 1), fill=(0, 0, 0, 70))
+    return im
+
+
+def spring(t, over=1.0):
+    """0->1 with a small overshoot (slick settle)."""
+    t = max(0.0, min(1.0, t))
+    return 1 + (2.2 * over) * (t - 1) ** 3 + (1.2 * over) * (t - 1) ** 2
+
+
+def blend_layers(bg, fg, bbox, fbox, w, h):
+    """Crop+scale the world background and the transparent foreground (different windows = parallax) and composite -> RGB array."""
+    if cv2 is None:
+        b = bg.convert("RGBA").resize((w, h), Image.BILINEAR, box=bbox)
+        b.alpha_composite(fg.resize((w, h), Image.BILINEAR, box=fbox))
+        return np.asarray(b.convert("RGB"))
+
+    def warp(img, box, ch):
+        arr = np.asarray(img)
+        sx, sy = w / (box[2] - box[0]), h / (box[3] - box[1])
+        M = np.array([[sx, 0, -box[0] * sx], [0, sy, -box[1] * sy]], np.float32)
+        return cv2.warpAffine(arr, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    b = warp(bg, bbox, 3)
+    f = warp(fg, fbox, 4)
+    a = f[..., 3:4].astype(np.uint16)
+    out = (b.astype(np.uint16) * (255 - a) + f[..., :3].astype(np.uint16) * a + 127) // 255
+    return out.astype(np.uint8)
+
+
+PARTICLES = {"snow": "snow", "desert": "dust", "ancient": "dust", "underwater": "bubbles", "night": "stars", "space": "stars",
+             "forest": "pollen", "meadow": "pollen", "cave": "dust", "sea": "pollen"}
+
+
 class Scene:
-    def __init__(self, w, h, spec, idx, seed):
+    def __init__(self, w, h, spec, idx, seed, words=None, span=4.0):
         self.w, self.h, self.idx = w, h, idx
         land = w >= h
         self.land = land
         self.Wd, self.Hd = int(w * MARGIN), int(h * MARGIN)
-        self.Hc = int(self.Hd * (1.0 if land else 0.90))   # composition height (vertical keeps the caption zone free)
+        self.Hc = int(self.Hd * (1.0 if land else 0.90))
         ow = S.ow_for(self.Hd)
         self.ow = ow
         rng = random.Random(seed * 131 + idx)
+        self.rng = rng
+        self.words = words or []
         # ---- background
         big = Image.new("RGB", (self.Wd * SS, self.Hc * SS), (255, 255, 255))
         d = ImageDraw.Draw(big)
         setting = spec.get("setting") if spec.get("setting") in S.SETTINGS else "meadow"
+        self.setting = setting
         gy = S.SETTINGS[setting](d, self.Wd * SS, self.Hc * SS, ow * SS, rng) / SS
         self.gy = gy
         bg = big.resize((self.Wd, self.Hc), Image.LANCZOS)
-        if self.Hc < self.Hd:   # extend the ground colour under the caption zone
+        if self.Hc < self.Hd:
             full = Image.new("RGB", (self.Wd, self.Hd))
             full.paste(bg, (0, 0))
             strip = bg.crop((0, self.Hc - 3, self.Wd, self.Hc - 1)).resize((self.Wd, self.Hd - self.Hc + 1))
@@ -163,130 +217,253 @@ class Scene:
                     for kx in (-1, 0, 1):
                         T.stroke(dd, [(x, y), (x + kx * r, y - r * 1.6)], max(3, ow * 0.9), drk)
             bg = full
-        self.bg = bg.convert("RGBA")
-        self.dark = setting in ("space", "night", "cave")
-        # ---- hero placement
+        vg = np.ones((self.Hd, self.Wd), np.float32)
+        yy_, xx_ = np.mgrid[0:self.Hd, 0:self.Wd]
+        rr_ = np.sqrt(((xx_ - self.Wd / 2) / (self.Wd / 2)) ** 2 + ((yy_ - self.Hd / 2) / (self.Hd / 2)) ** 2)
+        vg = 1.0 - 0.14 * np.clip(rr_ - 0.6, 0, 1) ** 1.6
+        bg = Image.fromarray((np.asarray(bg, dtype=np.float32) * vg[..., None]).astype(np.uint8))
+        self.bg = bg
+        # ---- characters
+        chars = spec.get("chars") or [dict(who="hero", pose=spec.get("pose", "stand"), pose2=spec.get("pose2", "stand"), expr=spec.get("expr", "neutral"))]
+        chars = chars[:2]
+        self.n = len(chars)
         side = 0 if spec.get("hero_side", "left") == "left" else 1
         self.side = side
-        hero_h = (0.58 if land else 0.46) * self.Hc
-        self.R = hero_h / 6.4
-        self.hx = self.Wd * (0.30 if side == 0 else 0.70) if land else self.Wd * (0.36 if side == 0 else 0.64)
+        hero_h = (0.58 if land else 0.46) * self.Hc * (1.0 if self.n == 1 else 0.84)
+        self.chars = []
+        if self.n == 1:
+            xs = [self.Wd * ((0.30 if side == 0 else 0.70) if land else (0.36 if side == 0 else 0.64))]
+        else:
+            xs = [self.Wd * (0.27 if land else 0.29), self.Wd * (0.73 if land else 0.71)]
+        for k, c in enumerate(chars):
+            who = c.get("who") if c.get("who") in T.DESIGNS else "hero"
+            des = T.DESIGNS[who]
+            p1 = c.get("pose") if c.get("pose") in T.POSES else "stand"
+            p2 = c.get("pose2") if c.get("pose2") in T.POSES else p1
+            ex = c.get("expr") if c.get("expr") in T.EXPR else "neutral"
+            R = hero_h / 6.4 * des["scale"]
+            fl = (k == 1) if self.n == 2 else (side == 1)
+            ch = dict(who=who, p1=p1, p2=p2, expr=ex, R=R, x=xs[k], flip=fl, cache={}, delay=0.12 * k, side=-1 if xs[k] < self.Wd / 2 else 1)
+            fx = None
+            if ex in ("shocked",):
+                fx = effects_layer("shock", R, ow)
+            elif ex in ("scared", "worried"):
+                fx = effects_layer("sweat", R, ow)
+            elif ex in ("happy", "excited"):
+                fx = effects_layer("spark", R, ow)
+            elif ex == "sleepy":
+                fx = effects_layer("zzz", R, ow)
+            elif ex == "think":
+                fx = effects_layer("question", R, ow)
+            ch["fx"] = fx
+            ch["speed"] = speed_layer(R, ow, -1 if fl else 1) if p1 in ("run", "flee") else None
+            ch["shadow"] = shadow_layer(R * 3.2)
+            self.chars.append(ch)
         self.feet = gy + self.Hc * 0.045
+        chars_R = max(c["R"] for c in self.chars)
         # ---- props
-        self.props = []   # (img, x, y_anchor, z_behind, pop_delay)
+        self.props = []
         ground = [p for p in spec.get("props", []) if p in S.PROPS and p not in S.AIR][:3]
         air = [p for p in spec.get("props", []) if p in S.PROPS and p in S.AIR][:2]
-        opp = self.Wd * ((0.72 if side == 0 else 0.28) if land else (0.70 if side == 0 else 0.30))
+        if self.n == 1:
+            opp = self.Wd * ((0.72 if side == 0 else 0.28) if land else (0.70 if side == 0 else 0.30))
+        else:
+            opp = self.Wd * 0.5
         base_sz = min(self.Hc * (0.42 if land else 0.34), self.Wd * (0.42 if land else 0.62))
-        slots = [(opp, 1.0, False), (self.Wd * (0.52 if side == 0 else 0.48), 0.55, True),
+        if self.n == 2:
+            base_sz *= 0.62
+        slots = [(opp, 1.0, self.n == 2), (self.Wd * (0.52 if side == 0 else 0.48), 0.55, True),
                  (self.Wd * (0.08 if side == 0 else 0.92), 0.5, True)]
         for i, name in enumerate(ground):
             x, k, behind = slots[i]
             sz = base_sz * k * (1.25 if name in ("castle", "house", "mountain", "volcano", "pyramid", "dino", "bug", "car", "boat") else 1.0)
             im, ax, ay = prop_layer(name, sz, ow, seed + i)
+            if self.n == 1 and i == 0:   # keep the main prop clear of the hero
+                hx0 = xs[0]
+                lo, hi = (hx0 + chars_R * 1.5, self.Wd * 0.94) if side == 0 else (self.Wd * 0.06, hx0 - chars_R * 1.5)
+                span_w = max(10, hi - lo)
+                if im.width > span_w:
+                    k2 = span_w / im.width
+                    im = im.resize((max(1, int(im.width * k2)), max(1, int(im.height * k2))), Image.LANCZOS)
+                    ax, ay = ax * k2, ay * k2
+                x = min(max(x, lo + im.width / 2), hi - im.width / 2)
+            elif im.width > self.Wd * 0.5:
+                k2 = self.Wd * 0.5 / im.width
+                im = im.resize((max(1, int(im.width * k2)), max(1, int(im.height * k2))), Image.LANCZOS)
+                ax, ay = ax * k2, ay * k2
             y = gy + self.Hc * (0.06 if not behind else 0.0)
-            self.props.append((im, x - ax + im.width / 2, y - ay + im.height / 2, behind, 0.10 + 0.22 * i))
-        aslots = [(opp, self.Hc * 0.2), (self.Wd * (0.5 if side == 0 else 0.5), self.Hc * 0.12)]
+            self.props.append(dict(im=im, x=x - ax + im.width / 2, y=y - ay + im.height / 2, behind=behind, delay=0.10 + 0.2 * i, name=name,
+                                   shadow=shadow_layer(im.width * 0.9) if not behind else None, air=False, bx=x, by=y))
+        aslots = [(opp, self.Hc * 0.2), (self.Wd * (0.86 if side == 0 else 0.14), self.Hc * 0.12)] if self.n == 1 else [(self.Wd * 0.42, self.Hc * 0.17), (self.Wd * 0.6, self.Hc * 0.17)]
         for i, name in enumerate(air):
             ax_, ay_ = aslots[i]
-            sz = self.Hc * (0.2 if i == 0 else 0.15)
+            sz = self.Hc * ((0.2 if i == 0 else 0.15) * (1 if self.n == 1 else 0.75))
             im, ax, ay = prop_layer(name, sz, ow, seed + 7 + i)
-            self.props.append((im, ax_, ay_ + im.height * 0.35, False, 0.3 + 0.2 * i))
+            self.props.append(dict(im=im, x=ax_, y=ay_ + im.height * 0.35, behind=False, delay=0.3 + 0.2 * i, name=name, shadow=None, air=True, bx=ax_, by=ay_))
+        self.fire = next((p for p in self.props if p["name"] == "campfire"), None)
         # ---- label
         self.label = None
         lab = (spec.get("label") or "").strip()
         if lab:
             lab = lab[:28]
-            words = lab.split()
-            if len(words) > 2 or len(lab) > 14:
-                half = (len(words) + 1) // 2
-                lab = " ".join(words[:half]) + "\n" + " ".join(words[half:])
+            ws = lab.split()
+            if len(ws) > 2 or len(lab) > 14:
+                half = (len(ws) + 1) // 2
+                lab = " ".join(ws[:half]) + "\n" + " ".join(ws[half:])
             self.label = label_layer(lab, self.Hc * (0.07 if land else 0.052))
-        # ---- hero + fx
-        self.expr = spec.get("expr", "neutral")
-        self.p1 = spec.get("pose", "stand")
-        self.p2 = spec.get("pose2", self.p1)
-        if self.p1 not in T.POSES:
-            self.p1 = "stand"
-        if self.p2 not in T.POSES:
-            self.p2 = self.p1
-        self.flip = side == 1
-        self.fx = None
-        if self.expr in ("shocked",):
-            self.fx = effects_layer("shock", self.R, ow)
-        elif self.expr in ("scared", "worried"):
-            self.fx = effects_layer("sweat", self.R, ow)
-        elif self.expr in ("happy", "excited"):
-            self.fx = effects_layer("spark", self.R, ow)
-        elif self.expr == "sleepy":
-            self.fx = effects_layer("zzz", self.R, ow)
-        elif self.expr == "think":
-            self.fx = effects_layer("question", self.R, ow)
-        self.speed = speed_layer(self.R, ow, -1 if side else 1) if self.p1 in ("run", "flee") else None
-        self._hero_cache = {}
+        # ---- camera + particles
+        kinds = ["push", "pull", "pan", "push", "pan2", "pull"]
+        self.cam = "punch" if any(c["expr"] in ("shocked", "scared") for c in self.chars) else kinds[(idx + seed) % len(kinds)]
+        self.pkind = PARTICLES.get(setting)
+        self.parts = [(rng.random(), rng.random(), rng.uniform(0.4, 1.0), rng.uniform(0.5, 1.6)) for _ in range(28)]
 
-    def hero(self, blend, blink):
-        key = (round(blend * 6), blink)
-        if key not in self._hero_cache:
-            pose = T.blend_pose(self.p1, self.p2, key[0] / 6)
-            img, fy, hip = T.draw_hero(pose, self.expr, self.R, blinking=blink, flip=self.flip)
-            self._hero_cache[key] = (img, fy, hip)
-        return self._hero_cache[key]
+    def hero(self, ch, blend, blink, mouth):
+        key = (round(blend * 5), blink, mouth)
+        if key not in ch["cache"]:
+            pose = T.blend_pose(ch["p1"], ch["p2"], key[0] / 5)
+            img, fy, hip = T.draw_hero(pose, ch["expr"], ch["R"], blinking=blink, flip=ch["flip"], mouth_open=key[2] / 2.0, design=ch["who"])
+            bb = img.getbbox() or (0, 0, img.width, img.height)
+            ch["cache"][key] = (img.crop(bb), fy - bb[1], (hip[0] - bb[0], hip[1] - bb[1]))
+        return ch["cache"][key]
+
+    def talking(self, t, k):
+        if not self.words:
+            return 0.0
+        for a, b in self.words:
+            if a <= t <= b:
+                return abs(math.sin(t * 14 + k))
+        return 0.0
 
 
-def render_scene(sc, span, dest, w, h, fps, caption_clear=False):
+def _bump(x):
+    return math.exp(-x * x)
+
+
+def render_scene(sc, span, dest, w, h, fps):
     frames = max(2, int(round(span * fps)))
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps), "-i", "-",
            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(dest)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     Wd, Hd = sc.Wd, sc.Hd
-    pull = sc.idx % 2 == 1
+    bgA = sc.bg
     try:
         for f in range(frames):
             t = f / fps
-            k = f / max(1, frames - 1)
-            if pull:
-                k = 1 - k
-            world = sc.bg.copy()
+            k = _ease(f / max(1, frames - 1))
+            fg = Image.new("RGBA", (Wd, Hd), (0, 0, 0, 0))
             # behind props
-            for im, x, y, behind, dl in sc.props:
-                if behind:
-                    paste_c(world, im, x, y, max(0.05, _back((t - dl) / 0.4)))
-            # hero pose: switch from pose1 to pose2 half-way
-            tm = span * 0.5
-            blend = _ease((t - tm) / 0.45) if sc.p2 != sc.p1 else 0.0
-            blink = (t % 3.1) > 2.95
-            himg, fy, hip = sc.hero(blend, blink)
-            enter = _ease(t / 0.4)
-            slide = (1 - enter) * Wd * 0.25 * (-1 if sc.side == 0 else 1)
-            bob = math.sin(t * 3.2) * sc.R * 0.03
-            hx = sc.hx + slide
-            fyw = sc.feet + bob
-            x0 = int(hx - hip[0])
-            y0 = int(fyw - fy)
-            if sc.speed is not None:
-                sx = hx - (1 if sc.side == 0 else -1) * sc.R * 3.2
-                paste_c(world, sc.speed, sx, fyw - sc.R * 3.2, 1.0, 0.9)
-            world.paste(himg, (x0, y0), himg)
-            if sc.fx is not None and t > 0.25:
-                lean_head = (hx, fyw - sc.R * 5.4)
-                p = _back((t - 0.25) / 0.3)
-                paste_c(world, sc.fx, hx, y0 + hip[1] - sc.R * 2.95, max(0.1, p))
+            for p in sc.props:
+                if p["behind"]:
+                    paste_c(fg, p["im"], p["x"], p["y"], max(0.05, _back((t - p["delay"]) / 0.4)))
+            # characters
+            speaker = 0 if sc.n == 1 else (0 if t < span * 0.5 else 1)
+            for ci, ch in enumerate(sc.chars):
+                tt = t - ch["delay"]
+                R = ch["R"]
+                tm = span * (0.5 if ci == 0 else 0.62)
+                blend = spring((tt - tm) / 0.5) if ch["p2"] != ch["p1"] else 0.0
+                blink = ((t + ci * 0.9) % 3.1) > 2.95
+                mq = 0
+                if ci == speaker:
+                    m = sc.talking(t, ci)
+                    mq = 0 if m < 0.2 else (1 if m < 0.6 else 2)
+                himg, fy, hip = sc.hero(ch, blend, blink, mq)
+                ent = max(0.0, min(1.0, tt / 0.55))
+                off = (1 - spring(ent)) * Wd * 0.3 * ch["side"] * -1
+                hop = -math.sin(math.pi * min(1.0, ent)) * R * 0.45 if ent < 1 else 0
+                land_b = _bump((tt - 0.55) / 0.09) if tt > 0.3 else 0.0
+                breathe = math.sin(t * 2.4 + ci) * 0.012
+                sxs = 1 + 0.09 * land_b - breathe + (0.05 * math.sin(math.pi * ent) if ent < 1 else 0) * -1
+                sys_ = 1 - 0.10 * land_b + breathe + (0.07 * math.sin(math.pi * ent) if ent < 1 else 0)
+                sway = math.sin(t * 1.7 + ci * 1.3) * 1.1
+                xf = ch["x"] + off
+                yf = sc.feet + hop
+                # shadow
+                sh = ch["shadow"]
+                shs = 1.0 - min(0.25, abs(hop) / (R * 3))
+                paste_c(fg, sh, xf, sc.feet + sc.Hc * 0.004, 1.0, 0.9 * ent, sx=shs, sy=shs)
+                if ch["speed"] is not None and tt > 0.1:
+                    sx_ = xf - (1 if not ch["flip"] else -1) * R * 3.2
+                    paste_c(fg, ch["speed"], sx_ + math.sin(t * 30) * R * 0.1, yf - R * 3.2, 1.0, 0.9)
+                im2 = himg
+                if abs(sxs - 1) > 0.004 or abs(sys_ - 1) > 0.004:
+                    im2 = himg.resize((max(1, int(himg.width * sxs)), max(1, int(himg.height * sys_))), Image.BILINEAR)
+                    fy2, hx2, hy2 = fy * sys_, hip[0] * sxs, hip[1] * sys_
+                else:
+                    fy2, hx2, hy2 = fy, hip[0], hip[1]
+                comp(fg, im2, xf - hx2, yf - fy2)
+                if ch["fx"] is not None and tt > 0.3:
+                    paste_c(fg, ch["fx"], xf, yf - fy2 + hy2 - R * 2.95, max(0.1, _back((tt - 0.3) / 0.3)))
             # front props
-            for im, x, y, behind, dl in sc.props:
-                if not behind:
-                    paste_c(world, im, x, y, max(0.05, _back((t - dl) / 0.4)))
+            for p in sc.props:
+                if not p["behind"]:
+                    s_ = max(0.05, _back((t - p["delay"]) / 0.4))
+                    yy = p["y"]
+                    if p["air"]:
+                        yy += math.sin(t * 2.6 + p["delay"] * 5) * sc.Hc * 0.008
+                    if p["shadow"] is not None and s_ > 0.3:
+                        paste_c(fg, p["shadow"], p["bx"], p["by"] + sc.Hc * 0.004, 1.0, 0.8)
+                    sc_x = s_
+                    sc_y = s_
+                    if p is sc.fire:
+                        sc_y *= 1 + 0.035 * math.sin(t * 17)
+                        sc_x *= 1 - 0.02 * math.sin(t * 17)
+                    paste_c(fg, p["im"], p["x"], yy, sx=sc_x, sy=sc_y)
             if sc.label is not None and t > 0.15:
-                paste_c(world, sc.label, Wd / 2, Hd * (0.10 if sc.land else 0.09) + sc.label.height / 2,
-                        max(0.05, _back((t - 0.15) / 0.35)))
-            # camera
-            ww = Wd - (Wd - w) * _ease(k)
-            wh = Hd - (Hd - h) * _ease(k)
-            cx = Wd * (0.5 + (0.5 - sc.side) * 0.0)
-            cy = Hd * 0.5 if sc.land else Hd * 0.5
-            box = (cx - ww / 2, cy - wh / 2, cx + ww / 2, cy + wh / 2)
-            frame = world.convert("RGB").resize((w, h), Image.BILINEAR, box=box)
-            proc.stdin.write(np.asarray(frame).tobytes())
+                lp = _back((t - 0.15) / 0.35)
+                paste_c(fg, sc.label, Wd / 2, Hd * (0.10 if sc.land else 0.09) + sc.label.height / 2 + math.sin(t * 2.2) * Hd * 0.003, max(0.05, lp))
+            # ---- camera (bg moves less than fg -> parallax)
+            c0 = sc.chars[0]["x"] / Wd
+            if sc.cam == "push":
+                z, cx = 1.05 + 0.11 * k, 0.5 + (c0 - 0.5) * 0.3 * k
+            elif sc.cam == "pull":
+                z, cx = 1.16 - 0.11 * k, 0.5 + (c0 - 0.5) * 0.3 * (1 - k)
+            elif sc.cam == "pan":
+                z, cx = 1.13, 0.44 + 0.12 * k
+            elif sc.cam == "pan2":
+                z, cx = 1.13, 0.56 - 0.12 * k
+            else:  # punch: fast zoom-in with a little shake
+                z = 1.04 + 0.12 * _ease(t / 0.35) + 0.03 * k
+                cx = 0.5 + (c0 - 0.5) * 0.25
+            shake = 0.0
+            if sc.cam == "punch" and t < 0.6:
+                shake = math.sin(t * 60) * (1 - t / 0.6) * 0.004
+            cy = 0.5 + shake
+
+            def win(zz, cxx):
+                ww, wh = Wd / zz, Hd / zz
+                x0 = min(max(cxx * Wd - ww / 2, 0), Wd - ww)
+                y0 = min(max(cy * Hd - wh / 2, 0), Hd - wh)
+                return (x0, y0, x0 + ww, y0 + wh)
+            zb = 1 + (z - 1) * 0.55
+            frame = blend_layers(bgA, fg, win(zb, 0.5 + (cx - 0.5) * 0.5), win(z, cx), w, h)
+            if sc.pkind or sc.fire is not None:
+                frame = Image.fromarray(frame)
+                dr = ImageDraw.Draw(frame)
+                unit = h / 1000
+                for (a, bb, sp, sz) in sc.parts:
+                    if sc.pkind == "snow":
+                        x, y, col, r = (a * w + math.sin(t * sp + bb * 9) * 30 * unit) % w, ((bb + t * 0.09 * sp) % 1) * h, (255, 255, 255), 5 * sz * unit
+                    elif sc.pkind == "bubbles":
+                        x, y, col, r = (a * w + math.sin(t * 2 * sp + bb * 7) * 22 * unit) % w, (1 - ((bb + t * 0.07 * sp) % 1)) * h, (210, 240, 252), 6 * sz * unit
+                    elif sc.pkind == "stars":
+                        x, y, col, r = a * w, bb * h * 0.7, (255, 250, 220), (2.5 + 2.5 * abs(math.sin(t * 2.5 * sp + a * 9))) * unit
+                    elif sc.pkind == "dust":
+                        x, y, col, r = (a * w + t * 40 * sp * unit) % w, (bb * 0.8 + 0.1) * h + math.sin(t * sp + a * 5) * 14 * unit, (255, 246, 224), 3.5 * sz * unit
+                    elif sc.pkind == "pollen":
+                        x, y, col, r = (a * w + t * 26 * sp * unit) % w, (bb * 0.7 + 0.05) * h + math.sin(t * 1.5 * sp + a * 7) * 18 * unit, (255, 248, 200), 3.2 * sz * unit
+                    else:
+                        continue
+                    dr.ellipse((x - r, y - r, x + r, y + r), fill=col)
+                if sc.fire is not None:
+                    for (a, bb, sp, sz) in sc.parts[:10]:
+                        life = (t * 0.5 * sp + bb) % 1
+                        fx_ = (sc.fire["bx"] / Wd) * w + math.sin(life * 9 + a * 6) * 26 * unit - (w - w) 
+                        fy_ = (sc.fire["by"] / Hd) * h - life * 260 * unit - 60 * unit
+                        r = (5 - 4 * life) * sz * unit
+                        dr.ellipse((fx_ - r, fy_ - r, fx_ + r, fy_ + r), fill=(255, int(190 - 80 * life), 60))
+                frame = np.asarray(frame)
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
     finally:
         proc.stdin.close()
         proc.wait()
@@ -332,6 +509,42 @@ KW = [  # (regex, dict(setting?, props?, expr?, pose?))
 ]
 
 
+CASTKW = [
+    (r"\b(king|queen|royal|throne|emperor|pharaoh|monarch)\b", "king"),
+    (r"\b(knight|soldier|army|warrior|battle|guard)\b", "knight"),
+    (r"\b(scientist|experiment|lab|laborator\w*|professor|research\w*|inventor|invent\w*)\b", "scientist"),
+    (r"\b(astronaut|space|rocket|moon|mars|orbit)\b", "astronaut"),
+    (r"\b(pirate|ship|treasure|sailor|captain)\b", "pirate"),
+    (r"\b(caveman|cave|prehistoric|stone age|neanderthal)\b", "caveman"),
+    (r"\b(explorer|expedition|jungle|safari|adventur\w*)\b", "explorer"),
+    (r"\b(grandfather|grandpa|old man|elder|wise)\b", "oldman"),
+    (r"\b(girl|she|her|mother|mom|woman|lady|daughter|sister)\b", "girl"),
+    (r"\b(kid|child|children|boy|son|baby)\b", "kid"),
+    (r"\b(boss|ceo|business|company|corporation|billionaire|banker|bank|tax\w*)\b", "boss"),
+    (r"\b(robot|ai|machine|android|computer)\b", "robot"),
+    (r"\b(doctor|hospital|virus|disease|medicine|patient|nurse|sick)\b", "doctor"),
+    (r"\b(cowboy|wild west|sheriff|outlaw|ranch)\b", "cowboy"),
+]
+
+
+def keyword_chars(text, i, spec):
+    low = text.lower()
+    roles = []
+    for rx, who in CASTKW:
+        if re.search(rx, low) and who not in roles:
+            roles.append(who)
+    pose, expr = spec["pose"], spec["expr"]
+    if not roles:
+        return [dict(who="hero", pose=pose, pose2=spec["pose2"], expr=expr)]
+    r1 = roles[0]
+    if len(roles) >= 2 and i % 3 != 0:
+        return [dict(who=roles[0], pose=pose, pose2=spec["pose2"], expr=expr),
+                dict(who=roles[1], pose="stand" if pose != "stand" else "wide", pose2="shrug", expr="neutral")]
+    if re.search(r"\b(you|your|we)\b", low):
+        return [dict(who="hero", pose=pose, pose2=spec["pose2"], expr=expr), dict(who=r1, pose="point" if i % 2 else "stand", pose2="shrug", expr="smug")]
+    return [dict(who=r1, pose=pose, pose2=spec["pose2"], expr=expr)]
+
+
 def keyword_plan(text, i, prev):
     spec = dict(setting=prev.get("setting", "meadow") if prev else "meadow", props=[], expr="neutral", pose="stand", label="")
     props = []
@@ -357,6 +570,7 @@ def keyword_plan(text, i, prev):
     caps = re.findall(r"\b[A-Z][a-z]{3,}\b", text)
     spec["label"] = caps[0].upper() if caps and i % 2 == 0 else ""
     spec["hero_side"] = "left" if i % 2 == 0 else "right"
+    spec["chars"] = keyword_chars(text, i, spec)
     return spec
 
 
@@ -372,8 +586,11 @@ def _prompt(title, lines, start, prev_setting):
         "\"scene\" (ONE sentence describing exactly what the picture shows for this line; write it first and make every other field follow from it), "
         f"\"setting\" (one of: {', '.join(S.SETTING_NAMES)}; keep the same setting for consecutive lines in the same place, change it when the location changes), "
         f"\"props\" (1-3 names that literally depict the line, most important first, from: {', '.join(S.PROP_NAMES)}), "
-        f"\"pose\" and \"pose2\" (hero body language at start and end of the line, from: {', '.join(T.POSES)}), "
-        f"\"expr\" (hero face, from: {', '.join(T.EXPR)}), "
+        "\"chars\" (1 or 2 characters in the scene; each {\"who\", \"pose\", \"pose2\", \"expr\"}; use a second character when two people interact, "
+        "otherwise one; 'hero' is the everyman narrator and should appear in most scenes about 'you', but use the matching specialist when the story is about them "
+        "(a king scene shows the king, a lab scene the scientist...) and keep each person looking the same throughout the video), "
+        f"character names ('who') with looks: {'; '.join(k + '=' + v for k, v in T.CAST_INFO.items())}; "
+        f"poses (start/end body language) from: {', '.join(T.POSES)}; expr (face) from: {', '.join(T.EXPR)}, "
         "\"hero_side\" (left or right; alternate for variety), "
         "and \"label\" (optional 1-3 word ALL-CAPS name or number worth showing on screen, e.g. a place, year or amount taken from the line; empty string if none). "
         "Match emotion to the line (fear when danger, smug when clever, shocked at surprises). "
@@ -385,8 +602,16 @@ def _clean(o, f):
     props = [p for p in (o.get("props") or []) if p in S.PROPS][:3] or f["props"]
     p1 = o.get("pose") if o.get("pose") in T.POSES else f["pose"]
     p2 = o.get("pose2") if o.get("pose2") in T.POSES else p1
+    chars = []
+    for c in (o.get("chars") or [])[:2]:
+        if isinstance(c, dict) and c.get("who") in T.DESIGNS:
+            q1 = c.get("pose") if c.get("pose") in T.POSES else "stand"
+            q2 = c.get("pose2") if c.get("pose2") in T.POSES else q1
+            chars.append(dict(who=c["who"], pose=q1, pose2=q2, expr=c.get("expr") if c.get("expr") in T.EXPR else "neutral"))
+    if not chars:
+        chars = f["chars"]
     return dict(
-        setting=o.get("setting") if o.get("setting") in S.SETTINGS else f["setting"],
+        setting=o.get("setting") if o.get("setting") in S.SETTINGS else f["setting"], chars=chars,
         props=props, pose=p1, pose2=p2,
         expr=o.get("expr") if o.get("expr") in T.EXPR else f["expr"],
         hero_side="right" if str(o.get("hero_side", "")).lower().startswith("r") else "left",
@@ -456,7 +681,8 @@ def build(script, title, words, length, work, w, h, fps):
     segs, spans = [], []
     seed = sum(ord(c) for c in title) % 997
     for i, (sc, dt) in enumerate(zip(scenes, det)):
-        scn = Scene(w, h, dt, i, seed)
+        sw = [(a_ - sc["t0"], b_ - sc["t0"]) for (_, a_, b_) in words if sc["t0"] - 0.05 <= a_ < sc["t1"]]
+        scn = Scene(w, h, dt, i, seed, sw, sc["t1"] - sc["t0"])
         end_of_chunk = (i % CHUNK == CHUNK - 1) or i == len(scenes) - 1
         base = sc["t1"] - sc["t0"]
         span = base + (0 if end_of_chunk else A.OVERLAP)
