@@ -50,20 +50,21 @@ def prop_layer(name, size, ow, seed):
     d = ImageDraw.Draw(im)
     bx, by = Wd / 2, Hd * 0.9
     if name in ("army", "crowd"):
-        kinds = ["soldier", "knight", "soldier", "general", "soldier", "roman"] if name == "army" else \
+        kinds = ["soldier", "soldier", "knight", "soldier", "soldier", "roman"] if name == "army" else \
                 ["peasant", "farmer", "girl", "kid", "woman", "oldman", "worker", "hero"]
-        rows = [(0.9, 7, 0.0), (0.45, 8, 0.5), (0.0, 7, 0.0)]
-        px = size * 0.115
         rng = random.Random(seed)
-        for ri, (dy, n_, off) in enumerate(rows):
+        hero_px = size / 6.4                      # one head-radius of a front-row person
+        for ri, (sc_, n_) in enumerate(((0.80, 6), (0.72, 7), (0.65, 8))):
+            px = hero_px * sc_ * SS
             for k in range(n_):
                 who = kinds[(k + ri * 2) % len(kinds)]
+                if name == "crowd" and who == "kid":
+                    who = "peasant"
                 himg, fy, hip = T.draw_hero("stand" if name == "army" else rng.choice(["stand", "wide", "cheer", "shrug"]),
-                                            "neutral" if name == "army" else rng.choice(["happy", "neutral", "shocked", "worried"]), px * SS * 0.5,
+                                            "neutral" if name == "army" else rng.choice(["happy", "neutral", "worried"]), px,
                                             design=who)
-                himg = himg.resize((max(1, himg.width * 2 // 2), max(1, himg.height)), Image.LANCZOS)
-                cx = bx + (k - (n_ - 1) / 2 + off * 0.0) * s * 0.3
-                cy = by - dy * s * 0.42 * 0.5
+                cx = bx + (k - (n_ - 1) / 2) * px * 3.0
+                cy = by - (2 - ri) * px * 1.15
                 im.alpha_composite(himg, (int(cx - hip[0]), int(cy - fy)))
         box = im.getbbox() or (0, 0, 2, 2)
         im2 = im.crop(box)
@@ -179,38 +180,54 @@ def spring(t, over=1.0):
     return 1 + (2.2 * over) * (t - 1) ** 3 + (1.2 * over) * (t - 1) ** 2
 
 
-def tint(im, mul):
-    if mul == (1.0, 1.0, 1.0):
-        return im
-    a = np.asarray(im).astype(np.float32)
-    a[..., 0] *= mul[0]; a[..., 1] *= mul[1]; a[..., 2] *= mul[2]
-    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGBA")
+PAPER = {"day": (246, 242, 232), "sunset": (250, 232, 206), "night": (118, 128, 166)}
+INKC = {"day": (22, 22, 28), "sunset": (24, 22, 28), "night": (30, 34, 56)}
+ACC_WARM = (255, 200, 40)    # brand gold (same family as the gold caption word)
+ACC_COOL = (64, 118, 214)
+
+
+def minimal(im, tod="day", bg=False):
+    """Minimal ink look: everything is ink / paper / greys, strong colours collapse into just two accents (gold, blue)."""
+    mode = "RGB" if im.mode == "RGB" else "RGBA"
+    arr = np.asarray(im).astype(np.float32)
+    rgb = arr[..., :3]
+    R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    sat = (mx - mn) / (mx + 1e-6)
+    L = (0.299 * R + 0.587 * G + 0.114 * B) / 255.0
+    lvl = (L if bg else np.round(L * 4) / 4)[..., None]
+    ink = np.array(INKC["day" if not bg else tod], np.float32)
+    paper = np.array(PAPER["day" if not bg else tod], np.float32)
+    base = ink + (paper - ink) * lvl
+    acc = np.where((R >= B)[..., None], np.array(ACC_WARM, np.float32), np.array(ACC_COOL, np.float32))
+    acc = acc * np.clip(0.62 + 0.5 * L, 0.6, 1.05)[..., None]
+    mask = ((sat > (0.72 if bg else 0.42)) & (mx > 100))[..., None]
+    out = np.where(mask, acc, base)
+    if mode == "RGBA":
+        out = np.concatenate([out, arr[..., 3:4]], -1)
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode)
+
+
+def tint(im, tod):
+    return minimal(im, "day")
 
 
 def grade_bg(bg, tod, mul, Hc, Hd, rng):
-    """Time-of-day grade + light rays/glow baked into the background."""
-    a = np.asarray(bg).astype(np.float32)
-    h, w = a.shape[:2]
+    img = minimal(bg, tod, bg=True)
     if tod == "sunset":
+        a = np.asarray(img).astype(np.float32)
+        h = a.shape[0]
         yy = np.linspace(0, 1, h)[:, None]
-        glow = np.exp(-((yy - 0.46) / 0.22) ** 2)[..., None] * np.array([255, 150, 70], np.float32) * 0.28
-        a = a * np.array(mul, np.float32) + glow
-    elif tod == "night":
-        a = a * np.array(mul, np.float32)
-    img = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).convert("RGBA")
-    if tod in ("day", "sunset"):   # soft god-rays from the top corner
-        ray = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        dr = ImageDraw.Draw(ray)
-        ox = w * (0.85 if rng.random() < 0.5 else 0.15)
-        for k in range(5):
-            x1 = ox + (k - 2) * w * 0.28
-            dr.polygon([(ox - w * 0.03, -10), (ox + w * 0.03, -10), (x1 + w * 0.09, h * 0.8), (x1 - w * 0.09, h * 0.8)],
-                       fill=(255, 244, 200, 22 if tod == "day" else 30))
-        img.alpha_composite(ray)
-    return img.convert("RGB")
+        glow = np.exp(-((yy - 0.46) / 0.2) ** 2)[..., None] * np.array([255, 170, 60], np.float32) * 0.22
+        img = Image.fromarray(np.clip(a + glow, 0, 255).astype(np.uint8))
+    return img
 
 
 def build_lut(tod):
+    return np.stack([np.arange(256, dtype=np.uint8)] * 3, -1).reshape(256, 1, 3)
+
+
+def _old_lut(tod):
     x = np.arange(256, dtype=np.float32) / 255.0
     sm = x * x * (3 - 2 * x)
     base = x * 0.55 + sm * 0.45                       # gentle S-curve contrast
@@ -221,7 +238,7 @@ def build_lut(tod):
     return (np.clip(lut, 0, 1) * 255).astype(np.uint8).reshape(256, 1, 3)
 
 
-def make_grain(w, h, n=5, amp=5):
+def make_grain(w, h, n=5, amp=3):
     rng = np.random.default_rng(7)
     out = []
     for _ in range(n):
@@ -298,7 +315,7 @@ class Scene:
         vg = 1.0 - 0.24 * np.clip(rr_ - 0.55, 0, 1) ** 1.5
         bg = Image.fromarray((np.asarray(bg, dtype=np.float32) * vg[..., None]).astype(np.uint8)).filter(ImageFilter.GaussianBlur(self.Hd * 0.0018))
         self.tod = spec.get("tod") if spec.get("tod") in ("day", "sunset", "night") else ("night" if setting in ("night", "space") else "day")
-        self.mul = {"day": (1.0, 1.0, 1.0), "sunset": (1.0, 0.86, 0.72), "night": (0.50, 0.58, 0.95)}[self.tod]
+        self.mul = self.tod
         bg = grade_bg(bg, self.tod, self.mul, self.Hc, self.Hd, rng)
         self.bg = bg
         # ---- characters
@@ -327,13 +344,16 @@ class Scene:
             xs = [self.Wd * (0.30 if land else 0.31), self.Wd * (0.70 if land else 0.69)]
         for k, c in enumerate(chars):
             who = c.get("who") if str(c.get("who", "")).split(":")[0] in T.DESIGNS else "hero"
-            des = T.design_for(who)
+            des = dict(T.design_for(who))
+            if des["headc"] != T.WHITE:
+                l_ = int(0.299 * des["headc"][0] + 0.587 * des["headc"][1] + 0.114 * des["headc"][2])
+                des["headc"] = (l_, l_, l_)
             p1 = c.get("pose") if c.get("pose") in T.POSES else "stand"
             p2 = c.get("pose2") if c.get("pose2") in T.POSES else p1
             ex = c.get("expr") if c.get("expr") in T.EXPR else "neutral"
             R = hero_h / 6.4 * des["scale"]
             fl = (k == 1) if self.n == 2 else (side == 1)
-            ch = dict(who=who, p1=p1, p2=p2, expr=ex, R=R, x=xs[k], flip=fl, cache={}, delay=0.12 * k, side=-1 if xs[k] < self.Wd / 2 else 1)
+            ch = dict(who=who, des=des, p1=p1, p2=p2, expr=ex, R=R, x=xs[k], flip=fl, cache={}, delay=0.12 * k, side=-1 if xs[k] < self.Wd / 2 else 1)
             fx = None
             if ex in ("shocked",):
                 fx = effects_layer("shock", R, ow)
@@ -345,7 +365,7 @@ class Scene:
                 fx = effects_layer("zzz", R, ow)
             elif ex == "think":
                 fx = effects_layer("question", R, ow)
-            ch["fx"] = fx
+            ch["fx"] = minimal(fx) if fx is not None else None
             ch["speed"] = speed_layer(R, ow, -1 if fl else 1) if p1 in ("run", "flee") else None
             ch["shadow"] = shadow_layer(R * 3.2)
             self.chars.append(ch)
@@ -361,7 +381,7 @@ class Scene:
         # ---- props: sized in hero-heights, placed only in free horizontal gaps so nothing overlaps or floats
         self.props = []
         names = [p for p in spec.get("props", []) if p in S.PROPS]
-        ground = [p for p in names if p not in S.AIR][:2]
+        ground = [p for p in names if p not in S.AIR][:1]
         air = [p for p in names if p in S.AIR][:1]
         if self.shot == "close":
             ground = []
@@ -430,7 +450,7 @@ class Scene:
         key = (round(blend * 5), blink, mouth)
         if key not in ch["cache"]:
             pose = T.blend_pose(ch["p1"], ch["p2"], key[0] / 5)
-            img, fy, hip = T.draw_hero(pose, ch["expr"], ch["R"], blinking=blink, flip=ch["flip"], mouth_open=key[2] / 2.0, design=ch["who"])
+            img, fy, hip = T.draw_hero(pose, ch["expr"], ch["R"], blinking=blink, flip=ch["flip"], mouth_open=key[2] / 2.0, design=ch["des"])
             bb = img.getbbox() or (0, 0, img.width, img.height)
             ch["cache"][key] = (tint(img.crop(bb), self.mul), fy - bb[1], (hip[0] - bb[0], hip[1] - bb[1]))
         return ch["cache"][key]
