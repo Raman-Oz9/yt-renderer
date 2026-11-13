@@ -374,6 +374,7 @@ def plan_details(scenes, title):
         "(round white head, blue t-shirt) acts out the story in colourful flat-colour scenes. For EACH numbered narration line, design the picture "
         "so a viewer who only sees the picture understands that exact line (show the thing being talked about literally, never a generic image). "
         "Return for each line an object with: "
+        "\"scene\" (ONE sentence describing exactly what the picture shows for this line; write it first and make every other field follow from it), "
         f"\"setting\" (one of: {', '.join(S.SETTING_NAMES)}; keep the same setting for consecutive lines in the same place, change it when the location changes), "
         f"\"props\" (1-3 names that literally depict the line, most important first, from: {', '.join(S.PROP_NAMES)}), "
         f"\"pose\" and \"pose2\" (hero body language at start and end of the line, from: {', '.join(T.POSES)}), "
@@ -409,6 +410,8 @@ def plan_details(scenes, title):
                             expr=o.get("expr") if o.get("expr") in T.EXPR else f["expr"],
                             hero_side="right" if str(o.get("hero_side", "")).lower().startswith("r") else "left",
                             label=re.sub(r"[^A-Z0-9 '$%&.,!?-]", "", str(o.get("label") or "").upper())[:24]))
+                    for i_, o_ in enumerate(out[:4]):
+                        A.note(f"Stickman plan {i_ + 1}: {o_['setting']} | {','.join(o_['props'])} | {o_['pose']} | {o_['expr']} | {o_['label']}")
                     return out
                 A.note(f"Stickman planner {model}: wrong shape")
             except Exception as exc:
