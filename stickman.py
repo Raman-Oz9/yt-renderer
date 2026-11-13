@@ -17,7 +17,7 @@ try:
     import cv2
 except Exception:   # PIL fallback (slower)
     cv2 = None
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 import ai_scenes as A
 import toon as T
@@ -79,18 +79,20 @@ def prop_layer(name, size, ow, seed):
 
 
 def label_layer(text, size):
+    """Chapter-title plate: white bold text on a dark translucent rounded bar with a gold underline."""
     f = S._font(size * SS)
     probe = ImageDraw.Draw(Image.new("RGB", (4, 4)))
     lines = text.upper().split("\n")
     wmax = max(probe.textlength(l, font=f) for l in lines)
-    pad = int(size * SS * 0.5)
-    Wd, Hd = int(wmax + pad * 2), int(size * SS * 1.25 * len(lines) + pad)
+    pad = int(size * SS * 0.55)
+    lh = size * SS * 1.2
+    Wd, Hd = int(wmax + pad * 2), int(lh * len(lines) + pad * 1.4)
     im = Image.new("RGBA", (Wd, Hd), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, Wd - 1, Hd - 1), radius=int(size * SS * 0.35), fill=(12, 14, 20, 176))
     for i, l in enumerate(lines):
-        d.text((Wd / 2, pad / 2 + size * SS * 1.25 * (i + 0.5)), l, font=f, fill=T.INK, anchor="mm",
-               stroke_width=int(size * SS * 0.12), stroke_fill=T.WHITE)
-        d.text((Wd / 2, pad / 2 + size * SS * 1.25 * (i + 0.5)), l, font=f, fill=T.INK, anchor="mm")
+        d.text((Wd / 2, pad * 0.7 + lh * (i + 0.5)), l, font=f, fill=(255, 255, 255), anchor="mm")
+    d.rectangle((pad, Hd - int(size * SS * 0.16), Wd - pad, Hd - int(size * SS * 0.08)), fill=(255, 205, 40))
     return im.resize((Wd // SS, Hd // SS), Image.LANCZOS)
 
 
@@ -208,6 +210,27 @@ def grade_bg(bg, tod, mul, Hc, Hd, rng):
     return img.convert("RGB")
 
 
+def build_lut(tod):
+    x = np.arange(256, dtype=np.float32) / 255.0
+    sm = x * x * (3 - 2 * x)
+    base = x * 0.55 + sm * 0.45                       # gentle S-curve contrast
+    r = base * 1.02 + 0.015 * x
+    g = base
+    b = base * 0.97 + 0.03 * (1 - x) * (1.0 if tod != "night" else 1.4)   # teal in the shadows, warm highlights
+    lut = np.stack([r, g, b], axis=-1)
+    return (np.clip(lut, 0, 1) * 255).astype(np.uint8).reshape(256, 1, 3)
+
+
+def make_grain(w, h, n=5, amp=5):
+    rng = np.random.default_rng(7)
+    out = []
+    for _ in range(n):
+        nz = rng.integers(-amp, amp + 1, (h // 2, w // 2, 1)).astype(np.int16)
+        nz = np.repeat(np.repeat(nz, 2, 0), 2, 1)[:h, :w]
+        out.append((np.clip(nz, 0, 255).astype(np.uint8).repeat(3, 2), np.clip(-nz, 0, 255).astype(np.uint8).repeat(3, 2)))
+    return out
+
+
 def blend_layers(bg, fg, bbox, fbox, w, h):
     """Crop+scale the world background and the transparent foreground (different windows = parallax) and composite -> RGB array."""
     if cv2 is None:
@@ -272,8 +295,8 @@ class Scene:
         vg = np.ones((self.Hd, self.Wd), np.float32)
         yy_, xx_ = np.mgrid[0:self.Hd, 0:self.Wd]
         rr_ = np.sqrt(((xx_ - self.Wd / 2) / (self.Wd / 2)) ** 2 + ((yy_ - self.Hd / 2) / (self.Hd / 2)) ** 2)
-        vg = 1.0 - 0.14 * np.clip(rr_ - 0.6, 0, 1) ** 1.6
-        bg = Image.fromarray((np.asarray(bg, dtype=np.float32) * vg[..., None]).astype(np.uint8))
+        vg = 1.0 - 0.24 * np.clip(rr_ - 0.55, 0, 1) ** 1.5
+        bg = Image.fromarray((np.asarray(bg, dtype=np.float32) * vg[..., None]).astype(np.uint8)).filter(ImageFilter.GaussianBlur(self.Hd * 0.0018))
         self.tod = spec.get("tod") if spec.get("tod") in ("day", "sunset", "night") else ("night" if setting in ("night", "space") else "day")
         self.mul = {"day": (1.0, 1.0, 1.0), "sunset": (1.0, 0.86, 0.72), "night": (0.50, 0.58, 0.95)}[self.tod]
         bg = grade_bg(bg, self.tod, self.mul, self.Hc, self.Hd, rng)
@@ -287,14 +310,21 @@ class Scene:
         self.shot = spec.get("shot") if spec.get("shot") in ("wide", "medium", "close") else "medium"
         if self.n == 2 and self.shot == "close":
             self.shot = "medium"
-        shot_k = {"wide": 0.50, "medium": 0.80, "close": 1.55 if land else 1.5}[self.shot]
+        shot_k = {"wide": 0.62, "medium": 0.88, "close": 1.55 if land else 1.5}[self.shot]
         hero_h = (0.58 if land else 0.46) * self.Hc * (1.0 if self.n == 1 else 0.84) * shot_k
         hero_h = min(hero_h, self.Hc * 0.9)
+        self.persp = setting in ("street", "city", "village", "field")
+        self.feet_persp = None
+        if self.persp:   # person height follows the street's own perspective so people and buildings share one scale
+            vpy_, G_ = self.Hc * 0.46, self.Hc * 0.56
+            z_ = {"wide": 2.3, "medium": 1.5, "close": 1.0}[self.shot]
+            hero_h = 1.06 * G_ / z_ * (1.0 if self.n == 1 else 0.9)
+            self.feet_persp = vpy_ + G_ / z_
         self.chars = []
         if self.n == 1:
-            xs = [self.Wd * ((0.30 if side == 0 else 0.70) if land else (0.36 if side == 0 else 0.64))]
+            xs = [self.Wd * ((0.34 if side == 0 else 0.66) if land else (0.38 if side == 0 else 0.62))]
         else:
-            xs = [self.Wd * (0.27 if land else 0.29), self.Wd * (0.73 if land else 0.71)]
+            xs = [self.Wd * (0.30 if land else 0.31), self.Wd * (0.70 if land else 0.69)]
         for k, c in enumerate(chars):
             who = c.get("who") if str(c.get("who", "")).split(":")[0] in T.DESIGNS else "hero"
             des = T.design_for(who)
@@ -320,49 +350,62 @@ class Scene:
             ch["shadow"] = shadow_layer(R * 3.2)
             self.chars.append(ch)
         self.feet = gy + self.Hc * 0.045
+        if self.feet_persp is not None:
+            self.feet = self.feet_persp
+            gy = self.feet - self.Hc * 0.045
+            self.gy = gy
         if self.shot == "close":
             self.feet = self.Hc * 0.10 + hero_h * 0.97
         self.hero_h = hero_h
         chars_R = max(c["R"] for c in self.chars)
-        # ---- props (sized in hero-heights so the world stays in scale with the characters)
+        # ---- props: sized in hero-heights, placed only in free horizontal gaps so nothing overlaps or floats
         self.props = []
         names = [p for p in spec.get("props", []) if p in S.PROPS]
-        ground = [p for p in names if p not in S.AIR][:3]
-        air = [p for p in names if p in S.AIR][:2]
+        ground = [p for p in names if p not in S.AIR][:2]
+        air = [p for p in names if p in S.AIR][:1]
         if self.shot == "close":
             ground = []
-        if self.n == 1:
-            opp = self.Wd * ((0.72 if side == 0 else 0.28) if land else (0.70 if side == 0 else 0.30))
-        else:
-            opp = self.Wd * 0.5
         hh = self.hero_h
-        slots = [(opp, 1.0, self.n == 2), (self.Wd * (0.52 if side == 0 else 0.48), 0.8, True),
-                 (self.Wd * (0.08 if side == 0 else 0.92), 0.7, True)]
+        lo_x, hi_x = self.Wd * 0.075, self.Wd * 0.925
+        taken = sorted((c["x"] - chars_R * 3.4, c["x"] + chars_R * 3.4) for c in self.chars)
+        gaps, cur = [], lo_x
+        for a_, b_ in taken:
+            if a_ > cur:
+                gaps.append([cur, min(a_, hi_x)])
+            cur = max(cur, b_)
+        if cur < hi_x:
+            gaps.append([cur, hi_x])
+        pref = [self.Wd * (0.70 if side == 0 else 0.30) if self.n == 1 else self.Wd * 0.5, self.Wd * 0.5]
         for i, name in enumerate(ground):
-            x, k, behind = slots[i]
-            sz = hh * S.SCALE.get(name, 1.0) * k * (0.75 if self.n == 2 and i == 0 else 1.0)
-            big = name in ("castle", "tower", "windmill", "pyramid", "mountain", "volcano", "house", "palm", "dino", "pine", "tree")
-            sz = min(sz, self.Hc * (0.9 if big else 0.55))
+            gaps = [g for g in gaps if g[1] - g[0] > self.Wd * 0.08]
+            if not gaps:
+                break
+            sz = hh * S.SCALE.get(name, 1.0) * (1.0 if i == 0 else 0.8)
+            big = name in ("castle", "tower", "windmill", "pyramid", "mountain", "volcano", "house", "palm", "dino", "pine", "tree", "hut")
+            sz = min(sz, self.Hc * (0.85 if big else 0.5))
             im, ax, ay = prop_layer(name, sz, ow, seed + i)
-            maxw = self.Wd * (0.55 if name in ("army", "crowd") else 0.5)
-            if self.n == 1 and i == 0:
-                hx0 = xs[0]
-                lo, hi = (hx0 + chars_R * 1.5, self.Wd * 0.94) if side == 0 else (self.Wd * 0.06, hx0 - chars_R * 1.5)
-                maxw = min(maxw, max(10, hi - lo))
-            if im.width > maxw:
-                k2 = maxw / im.width
+            g = min(gaps, key=lambda g_: abs((g_[0] + g_[1]) / 2 - pref[i]))
+            room = g[1] - g[0]
+            if im.width > room:
+                k2 = room / im.width
                 im = im.resize((max(1, int(im.width * k2)), max(1, int(im.height * k2))), Image.LANCZOS)
                 ax, ay = ax * k2, ay * k2
-            if self.n == 1 and i == 0:
-                x = min(max(x, lo + im.width / 2), hi - im.width / 2)
-            y = gy + self.Hc * (0.06 if not behind else 0.0)
-            self.props.append(dict(im=im, x=x - ax + im.width / 2, y=y - ay + im.height / 2, behind=behind, delay=0.10 + 0.2 * i, name=name,
-                                   shadow=shadow_layer(im.width * 0.9) if not behind else None, air=False, bx=x, by=y))
-        aslots = [(opp, self.Hc * 0.2), (self.Wd * (0.86 if side == 0 else 0.14), self.Hc * 0.12)] if self.n == 1 else [(self.Wd * 0.42, self.Hc * 0.17), (self.Wd * 0.6, self.Hc * 0.17)]
+            cx = min(max(pref[i], g[0] + im.width / 2), g[1] - im.width / 2)
+            # split the gap so the next prop cannot overlap
+            l_, r_ = cx - im.width / 2 - self.Wd * 0.02, cx + im.width / 2 + self.Wd * 0.02
+            gaps.remove(g)
+            gaps += [[g[0], l_], [r_, g[1]]]
+            y = gy + self.Hc * (0.05 if i == 0 else 0.015)
+            self.props.append(dict(im=im, x=cx - ax + im.width / 2, y=y - ay + im.height / 2, behind=False, delay=0.10 + 0.2 * i, name=name,
+                                   shadow=shadow_layer(im.width * 0.9), air=False, bx=cx, by=y))
+        head_top = self.feet - hh * 1.02
         for i, name in enumerate(air):
-            ax_, ay_ = aslots[i]
-            sz = min(max(hh * S.SCALE.get(name, 0.6), self.Hc * 0.13), self.Hc * 0.3)
+            sz = min(max(hh * S.SCALE.get(name, 0.6), self.Hc * 0.12), self.Hc * 0.22)
             im, ax, ay = prop_layer(name, sz, ow, seed + 7 + i)
+            ay_ = self.Hc * 0.2
+            if ay_ + im.height * 0.8 > head_top - self.Hc * 0.02:
+                continue
+            ax_ = self.Wd * (0.70 if side == 0 else 0.30) if self.n == 1 else self.Wd * 0.5
             self.props.append(dict(im=im, x=ax_, y=ay_ + im.height * 0.35, behind=False, delay=0.3 + 0.2 * i, name=name, shadow=None, air=True, bx=ax_, by=ay_))
         for p in self.props:
             p["im"] = tint(p["im"], self.mul)
@@ -412,6 +455,8 @@ def render_scene(sc, span, dest, w, h, fps):
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     Wd, Hd = sc.Wd, sc.Hd
     bgA = sc.bg
+    lut = build_lut(sc.tod)
+    grain = make_grain(w, h) if cv2 is not None else None
     try:
         for f in range(frames):
             t = f / fps
@@ -477,7 +522,9 @@ def render_scene(sc, span, dest, w, h, fps):
                     paste_c(fg, p["im"], p["x"], yy, sx=sc_x, sy=sc_y)
             if sc.label is not None and t > 0.15:
                 lp = _back((t - 0.15) / 0.35)
-                paste_c(fg, sc.label, Wd / 2, Hd * (0.10 if sc.land else 0.09) + sc.label.height / 2 + math.sin(t * 2.2) * Hd * 0.003, max(0.05, lp))
+                lx = Wd * 0.075 + sc.label.width / 2 if sc.land else Wd / 2
+                ly = Hd * (0.10 if sc.land else 0.08) + sc.label.height / 2
+                paste_c(fg, sc.label, lx - (1 - min(1.0, lp)) * Wd * 0.05, ly, 1.0, min(1.0, max(0.0, lp)))
             # ---- camera (bg moves less than fg -> parallax)
             c0 = sc.chars[0]["x"] / Wd
             if sc.cam == "push":
@@ -529,6 +576,10 @@ def render_scene(sc, span, dest, w, h, fps):
                         r = (5 - 4 * life) * sz * unit
                         dr.ellipse((fx_ - r, fy_ - r, fx_ + r, fy_ + r), fill=(255, int(190 - 80 * life), 60))
                 frame = np.asarray(frame)
+            if cv2 is not None:
+                frame = cv2.LUT(np.ascontiguousarray(frame), lut)
+                gp, gn = grain[f % len(grain)]
+                frame = cv2.subtract(cv2.add(frame, gp), gn)
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
     finally:
         proc.stdin.close()
@@ -674,7 +725,7 @@ def keyword_plan(text, i, prev):
     spec["label"] = caps[0].upper() if caps and i % 2 == 0 else ""
     spec["hero_side"] = "left" if i % 2 == 0 else "right"
     spec["chars"] = keyword_chars(text, i, spec)
-    spec["shot"] = ["medium", "wide", "close", "medium", "wide", "medium"][i % 6] if "tod" not in spec or i % 2 else "wide"
+    spec["shot"] = ["medium", "medium", "close", "medium", "wide", "medium"][i % 6]
     if spec["shot"] == "close" and len(spec["chars"]) > 1:
         spec["shot"] = "medium"
     if "army" in spec["props"] or "crowd" in spec["props"]:
@@ -702,7 +753,7 @@ def _prompt(title, lines, start, prev_setting):
         "use props 'army' or 'crowd' (a whole group, wide shot) when the line is about many people; use settings street/village/field for medieval towns and farmland, city for modern cities; "
         f"poses (start/end body language) from: {', '.join(T.POSES)}; expr (face) from: {', '.join(T.EXPR)}, "
         "\"hero_side\" (left or right; alternate for variety), "
-        "\"shot\" (camera framing: wide = small characters in a big world, use for places, crowds, armies and establishing; medium = normal; close = big face for emotion or a punchline; vary them from line to line like a film editor), "
+        "\"shot\" (camera framing: wide = small characters in a big world, use for places, crowds, armies and establishing; medium = normal; close = big face for emotion or a punchline; use medium most of the time, wide only for places/crowds/armies, close at most once in four lines and only for emotion), "
         "\"tod\" (time of day: day, sunset or night; keep it consistent within a story beat), "
         "and \"label\" (optional 1-3 word ALL-CAPS name or number worth showing on screen, e.g. a place, year or amount taken from the line; empty string if none). "
         "Match emotion to the line (fear when danger, smug when clever, shocked at surprises). "
