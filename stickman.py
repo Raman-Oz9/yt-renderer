@@ -360,19 +360,14 @@ def keyword_plan(text, i, prev):
     return spec
 
 
-def plan_details(scenes, title):
-    n = len(scenes)
-    fb, prev = [], None
-    for i, sc in enumerate(scenes):
-        prev = keyword_plan(sc["text"], i, prev)
-        fb.append(dict(prev))
-    if not A.GEMINI_KEY:
-        return fb
-    listing = "\n".join(f"{i + 1}. {s['text']}" for i, s in enumerate(scenes))
-    ask = (
+def _prompt(title, lines, start, prev_setting):
+    listing = "\n".join(f"{start + i + 1}. {t}" for i, t in enumerate(lines))
+    cont = f"The previous scene took place in the '{prev_setting}' setting; keep it unless the location changes. " if prev_setting else ""
+    return (
         f"You are the storyboard artist for a cartoon explainer video titled \"{title}\" in the style of The Ink Explainer: one recurring hero "
         "(round white head, blue t-shirt) acts out the story in colourful flat-colour scenes. For EACH numbered narration line, design the picture "
         "so a viewer who only sees the picture understands that exact line (show the thing being talked about literally, never a generic image). "
+        + cont +
         "Return for each line an object with: "
         "\"scene\" (ONE sentence describing exactly what the picture shows for this line; write it first and make every other field follow from it), "
         f"\"setting\" (one of: {', '.join(S.SETTING_NAMES)}; keep the same setting for consecutive lines in the same place, change it when the location changes), "
@@ -382,43 +377,51 @@ def plan_details(scenes, title):
         "\"hero_side\" (left or right; alternate for variety), "
         "and \"label\" (optional 1-3 word ALL-CAPS name or number worth showing on screen, e.g. a place, year or amount taken from the line; empty string if none). "
         "Match emotion to the line (fear when danger, smug when clever, shocked at surprises). "
-        f"Return ONLY a JSON array of exactly {n} objects in order.\n\n{listing}")
-    import time as _t
-    for attempt in range(3):
-        for model in MODELS:
-            try:
-                r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    headers={"x-goog-api-key": A.GEMINI_KEY},
-                    json={"contents": [{"parts": [{"text": ask}]}],
-                          "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 16384}},
-                    timeout=120)
-                if r.status_code != 200:
-                    A.note(f"Stickman planner {model}: {r.status_code}")
-                    continue
-                arr = A.parse_json_list(r.json()["candidates"][0]["content"]["parts"][0]["text"])
-                if isinstance(arr, list) and len(arr) == n:
-                    out = []
-                    for o, f in zip(arr, fb):
-                        o = o if isinstance(o, dict) else {}
-                        props = [p for p in (o.get("props") or []) if p in S.PROPS][:3] or f["props"]
-                        p1 = o.get("pose") if o.get("pose") in T.POSES else f["pose"]
-                        p2 = o.get("pose2") if o.get("pose2") in T.POSES else p1
-                        out.append(dict(
-                            setting=o.get("setting") if o.get("setting") in S.SETTINGS else f["setting"],
-                            props=props, pose=p1, pose2=p2,
-                            expr=o.get("expr") if o.get("expr") in T.EXPR else f["expr"],
-                            hero_side="right" if str(o.get("hero_side", "")).lower().startswith("r") else "left",
-                            label=re.sub(r"[^A-Z0-9 '$%&.,!?-]", "", str(o.get("label") or "").upper())[:24]))
-                    for i_, o_ in enumerate(out[:4]):
-                        A.note(f"Stickman plan {i_ + 1}: {o_['setting']} | {','.join(o_['props'])} | {o_['pose']} | {o_['expr']} | {o_['label']}")
-                    return out
-                A.note(f"Stickman planner {model}: wrong shape")
-            except Exception as exc:
-                A.note(f"Stickman planner {model} failed: {exc}")
-        _t.sleep(4)
-    A.note("Stickman planner unavailable: using keyword fallback")
-    return fb
+        f"Return ONLY a JSON array of exactly {len(lines)} objects in order.\n\n{listing}")
+
+
+def _clean(o, f):
+    o = o if isinstance(o, dict) else {}
+    props = [p for p in (o.get("props") or []) if p in S.PROPS][:3] or f["props"]
+    p1 = o.get("pose") if o.get("pose") in T.POSES else f["pose"]
+    p2 = o.get("pose2") if o.get("pose2") in T.POSES else p1
+    return dict(
+        setting=o.get("setting") if o.get("setting") in S.SETTINGS else f["setting"],
+        props=props, pose=p1, pose2=p2,
+        expr=o.get("expr") if o.get("expr") in T.EXPR else f["expr"],
+        hero_side="right" if str(o.get("hero_side", "")).lower().startswith("r") else "left",
+        label=re.sub(r"[^A-Z0-9 '$%&.,!?-]", "", str(o.get("label") or "").upper())[:24])
+
+
+def plan_details(scenes, title, batch=24):
+    """Per-line storyboard. LLM router (llm.py: Gemini -> Groq -> OpenRouter -> NVIDIA, whichever keys exist), planned in
+    batches so small models cope with long videos; any batch no provider can plan falls back to the keyword planner."""
+    import llm
+    n = len(scenes)
+    fb, prev = [], None
+    for i, sc in enumerate(scenes):
+        prev = keyword_plan(sc["text"], i, prev)
+        fb.append(dict(prev))
+    provs = llm.available()
+    if not provs:
+        A.note("Stickman planner: no LLM key, keyword fallback")
+        return fb
+    A.note(f"Stickman planner providers: {', '.join(provs)}")
+    out = list(fb)
+    prev_setting = None
+    for st in range(0, n, batch):
+        lines = [s["text"] for s in scenes[st:st + batch]]
+        arr = llm.ask_list(_prompt(title, lines, st, prev_setting), len(lines))
+        if arr is None:
+            A.note(f"Stickman planner: batch {st // batch + 1} unplanned, keyword fallback")
+            prev_setting = fb[min(n, st + len(lines)) - 1]["setting"]
+            continue
+        for k, o in enumerate(arr):
+            out[st + k] = _clean(o, fb[st + k])
+        prev_setting = out[st + len(lines) - 1]["setting"]
+    for i_, o_ in enumerate(out[:4]):
+        A.note(f"Stickman plan {i_ + 1}: {o_['setting']} | {','.join(o_['props'])} | {o_['pose']} | {o_['expr']} | {o_['label']}")
+    return out
 
 
 # ----------------------------------------------------------------------------- joining
