@@ -49,6 +49,27 @@ def prop_layer(name, size, ow, seed):
     im = Image.new("RGBA", (Wd, Hd), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     bx, by = Wd / 2, Hd * 0.9
+    if name in ("army", "crowd"):
+        kinds = ["soldier", "knight", "soldier", "general", "soldier", "roman"] if name == "army" else \
+                ["peasant", "farmer", "girl", "kid", "woman", "oldman", "worker", "hero"]
+        rows = [(0.9, 7, 0.0), (0.45, 8, 0.5), (0.0, 7, 0.0)]
+        px = size * 0.115
+        rng = random.Random(seed)
+        for ri, (dy, n_, off) in enumerate(rows):
+            for k in range(n_):
+                who = kinds[(k + ri * 2) % len(kinds)]
+                himg, fy, hip = T.draw_hero("stand" if name == "army" else rng.choice(["stand", "wide", "cheer", "shrug"]),
+                                            "neutral" if name == "army" else rng.choice(["happy", "neutral", "shocked", "worried"]), px * SS * 0.5,
+                                            design=who)
+                himg = himg.resize((max(1, himg.width * 2 // 2), max(1, himg.height)), Image.LANCZOS)
+                cx = bx + (k - (n_ - 1) / 2 + off * 0.0) * s * 0.3
+                cy = by - dy * s * 0.42 * 0.5
+                im.alpha_composite(himg, (int(cx - hip[0]), int(cy - fy)))
+        box = im.getbbox() or (0, 0, 2, 2)
+        im2 = im.crop(box)
+        ax, ay = bx - box[0], by - box[1]
+        im2 = im2.resize((max(1, im2.width // SS), max(1, im2.height // SS)), Image.LANCZOS)
+        return im2, ax / SS, ay / SS
     S.PROPS[name](d, bx, by, s, ow * SS, random.Random(seed))
     box = im.getbbox() or (0, 0, 2, 2)
     im = im.crop(box)
@@ -156,6 +177,37 @@ def spring(t, over=1.0):
     return 1 + (2.2 * over) * (t - 1) ** 3 + (1.2 * over) * (t - 1) ** 2
 
 
+def tint(im, mul):
+    if mul == (1.0, 1.0, 1.0):
+        return im
+    a = np.asarray(im).astype(np.float32)
+    a[..., 0] *= mul[0]; a[..., 1] *= mul[1]; a[..., 2] *= mul[2]
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "RGBA")
+
+
+def grade_bg(bg, tod, mul, Hc, Hd, rng):
+    """Time-of-day grade + light rays/glow baked into the background."""
+    a = np.asarray(bg).astype(np.float32)
+    h, w = a.shape[:2]
+    if tod == "sunset":
+        yy = np.linspace(0, 1, h)[:, None]
+        glow = np.exp(-((yy - 0.46) / 0.22) ** 2)[..., None] * np.array([255, 150, 70], np.float32) * 0.28
+        a = a * np.array(mul, np.float32) + glow
+    elif tod == "night":
+        a = a * np.array(mul, np.float32)
+    img = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).convert("RGBA")
+    if tod in ("day", "sunset"):   # soft god-rays from the top corner
+        ray = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        dr = ImageDraw.Draw(ray)
+        ox = w * (0.85 if rng.random() < 0.5 else 0.15)
+        for k in range(5):
+            x1 = ox + (k - 2) * w * 0.28
+            dr.polygon([(ox - w * 0.03, -10), (ox + w * 0.03, -10), (x1 + w * 0.09, h * 0.8), (x1 - w * 0.09, h * 0.8)],
+                       fill=(255, 244, 200, 22 if tod == "day" else 30))
+        img.alpha_composite(ray)
+    return img.convert("RGB")
+
+
 def blend_layers(bg, fg, bbox, fbox, w, h):
     """Crop+scale the world background and the transparent foreground (different windows = parallax) and composite -> RGB array."""
     if cv2 is None:
@@ -222,6 +274,9 @@ class Scene:
         rr_ = np.sqrt(((xx_ - self.Wd / 2) / (self.Wd / 2)) ** 2 + ((yy_ - self.Hd / 2) / (self.Hd / 2)) ** 2)
         vg = 1.0 - 0.14 * np.clip(rr_ - 0.6, 0, 1) ** 1.6
         bg = Image.fromarray((np.asarray(bg, dtype=np.float32) * vg[..., None]).astype(np.uint8))
+        self.tod = spec.get("tod") if spec.get("tod") in ("day", "sunset", "night") else ("night" if setting in ("night", "space") else "day")
+        self.mul = {"day": (1.0, 1.0, 1.0), "sunset": (1.0, 0.86, 0.72), "night": (0.50, 0.58, 0.95)}[self.tod]
+        bg = grade_bg(bg, self.tod, self.mul, self.Hc, self.Hd, rng)
         self.bg = bg
         # ---- characters
         chars = spec.get("chars") or [dict(who="hero", pose=spec.get("pose", "stand"), pose2=spec.get("pose2", "stand"), expr=spec.get("expr", "neutral"))]
@@ -229,15 +284,20 @@ class Scene:
         self.n = len(chars)
         side = 0 if spec.get("hero_side", "left") == "left" else 1
         self.side = side
-        hero_h = (0.58 if land else 0.46) * self.Hc * (1.0 if self.n == 1 else 0.84)
+        self.shot = spec.get("shot") if spec.get("shot") in ("wide", "medium", "close") else "medium"
+        if self.n == 2 and self.shot == "close":
+            self.shot = "medium"
+        shot_k = {"wide": 0.50, "medium": 0.80, "close": 1.55 if land else 1.5}[self.shot]
+        hero_h = (0.58 if land else 0.46) * self.Hc * (1.0 if self.n == 1 else 0.84) * shot_k
+        hero_h = min(hero_h, self.Hc * 0.9)
         self.chars = []
         if self.n == 1:
             xs = [self.Wd * ((0.30 if side == 0 else 0.70) if land else (0.36 if side == 0 else 0.64))]
         else:
             xs = [self.Wd * (0.27 if land else 0.29), self.Wd * (0.73 if land else 0.71)]
         for k, c in enumerate(chars):
-            who = c.get("who") if c.get("who") in T.DESIGNS else "hero"
-            des = T.DESIGNS[who]
+            who = c.get("who") if str(c.get("who", "")).split(":")[0] in T.DESIGNS else "hero"
+            des = T.design_for(who)
             p1 = c.get("pose") if c.get("pose") in T.POSES else "stand"
             p2 = c.get("pose2") if c.get("pose2") in T.POSES else p1
             ex = c.get("expr") if c.get("expr") in T.EXPR else "neutral"
@@ -260,46 +320,51 @@ class Scene:
             ch["shadow"] = shadow_layer(R * 3.2)
             self.chars.append(ch)
         self.feet = gy + self.Hc * 0.045
+        if self.shot == "close":
+            self.feet = self.Hc * 0.10 + hero_h * 0.97
+        self.hero_h = hero_h
         chars_R = max(c["R"] for c in self.chars)
-        # ---- props
+        # ---- props (sized in hero-heights so the world stays in scale with the characters)
         self.props = []
-        ground = [p for p in spec.get("props", []) if p in S.PROPS and p not in S.AIR][:3]
-        air = [p for p in spec.get("props", []) if p in S.PROPS and p in S.AIR][:2]
+        names = [p for p in spec.get("props", []) if p in S.PROPS]
+        ground = [p for p in names if p not in S.AIR][:3]
+        air = [p for p in names if p in S.AIR][:2]
+        if self.shot == "close":
+            ground = []
         if self.n == 1:
             opp = self.Wd * ((0.72 if side == 0 else 0.28) if land else (0.70 if side == 0 else 0.30))
         else:
             opp = self.Wd * 0.5
-        base_sz = min(self.Hc * (0.42 if land else 0.34), self.Wd * (0.42 if land else 0.62))
-        if self.n == 2:
-            base_sz *= 0.62
-        slots = [(opp, 1.0, self.n == 2), (self.Wd * (0.52 if side == 0 else 0.48), 0.55, True),
-                 (self.Wd * (0.08 if side == 0 else 0.92), 0.5, True)]
+        hh = self.hero_h
+        slots = [(opp, 1.0, self.n == 2), (self.Wd * (0.52 if side == 0 else 0.48), 0.8, True),
+                 (self.Wd * (0.08 if side == 0 else 0.92), 0.7, True)]
         for i, name in enumerate(ground):
             x, k, behind = slots[i]
-            sz = base_sz * k * (1.25 if name in ("castle", "house", "mountain", "volcano", "pyramid", "dino", "bug", "car", "boat") else 1.0)
+            sz = hh * S.SCALE.get(name, 1.0) * k * (0.75 if self.n == 2 and i == 0 else 1.0)
+            sz = min(sz, self.Hc * 0.92)
             im, ax, ay = prop_layer(name, sz, ow, seed + i)
-            if self.n == 1 and i == 0:   # keep the main prop clear of the hero
+            maxw = self.Wd * (0.55 if name in ("army", "crowd") else 0.5)
+            if self.n == 1 and i == 0:
                 hx0 = xs[0]
                 lo, hi = (hx0 + chars_R * 1.5, self.Wd * 0.94) if side == 0 else (self.Wd * 0.06, hx0 - chars_R * 1.5)
-                span_w = max(10, hi - lo)
-                if im.width > span_w:
-                    k2 = span_w / im.width
-                    im = im.resize((max(1, int(im.width * k2)), max(1, int(im.height * k2))), Image.LANCZOS)
-                    ax, ay = ax * k2, ay * k2
-                x = min(max(x, lo + im.width / 2), hi - im.width / 2)
-            elif im.width > self.Wd * 0.5:
-                k2 = self.Wd * 0.5 / im.width
+                maxw = min(maxw, max(10, hi - lo))
+            if im.width > maxw:
+                k2 = maxw / im.width
                 im = im.resize((max(1, int(im.width * k2)), max(1, int(im.height * k2))), Image.LANCZOS)
                 ax, ay = ax * k2, ay * k2
+            if self.n == 1 and i == 0:
+                x = min(max(x, lo + im.width / 2), hi - im.width / 2)
             y = gy + self.Hc * (0.06 if not behind else 0.0)
             self.props.append(dict(im=im, x=x - ax + im.width / 2, y=y - ay + im.height / 2, behind=behind, delay=0.10 + 0.2 * i, name=name,
                                    shadow=shadow_layer(im.width * 0.9) if not behind else None, air=False, bx=x, by=y))
         aslots = [(opp, self.Hc * 0.2), (self.Wd * (0.86 if side == 0 else 0.14), self.Hc * 0.12)] if self.n == 1 else [(self.Wd * 0.42, self.Hc * 0.17), (self.Wd * 0.6, self.Hc * 0.17)]
         for i, name in enumerate(air):
             ax_, ay_ = aslots[i]
-            sz = self.Hc * ((0.2 if i == 0 else 0.15) * (1 if self.n == 1 else 0.75))
+            sz = min(max(hh * S.SCALE.get(name, 0.6), self.Hc * 0.13), self.Hc * 0.3)
             im, ax, ay = prop_layer(name, sz, ow, seed + 7 + i)
             self.props.append(dict(im=im, x=ax_, y=ay_ + im.height * 0.35, behind=False, delay=0.3 + 0.2 * i, name=name, shadow=None, air=True, bx=ax_, by=ay_))
+        for p in self.props:
+            p["im"] = tint(p["im"], self.mul)
         self.fire = next((p for p in self.props if p["name"] == "campfire"), None)
         # ---- label
         self.label = None
@@ -323,7 +388,7 @@ class Scene:
             pose = T.blend_pose(ch["p1"], ch["p2"], key[0] / 5)
             img, fy, hip = T.draw_hero(pose, ch["expr"], ch["R"], blinking=blink, flip=ch["flip"], mouth_open=key[2] / 2.0, design=ch["who"])
             bb = img.getbbox() or (0, 0, img.width, img.height)
-            ch["cache"][key] = (img.crop(bb), fy - bb[1], (hip[0] - bb[0], hip[1] - bb[1]))
+            ch["cache"][key] = (tint(img.crop(bb), self.mul), fy - bb[1], (hip[0] - bb[0], hip[1] - bb[1]))
         return ch["cache"][key]
 
     def talking(self, t, k):
@@ -473,6 +538,27 @@ def render_scene(sc, span, dest, w, h, fps):
 
 # ----------------------------------------------------------------------------- planning
 KW = [  # (regex, dict(setting?, props?, expr?, pose?))
+    (r"\b(army|armies|military|troops?|regiment|infantry|invade\w*|invasion)\b", dict(props=["army"], expr="angry", pose="point", tod="sunset")),
+    (r"\b(crowd|people|everyone|villagers?|citizens|population|town|mob|protest\w*)\b", dict(props=["crowd"])),
+    (r"\b(farm|farmer|crops?|harvest|field|fields|wheat|barn)\b", dict(setting="field", props=["hay", "windmill"], tod="sunset")),
+    (r"\b(village|medieval|middle ages|market|street|cobble\w*|old town)\b", dict(setting="street", props=["barrel", "wagon"])),
+    (r"\b(chicken|chickens|hen|hens|rooster|egg|eggs)\b", dict(props=["chicken"])),
+    (r"\b(horse|horses|cavalry|ride|riding)\b", dict(props=["horse"])),
+    (r"\b(cow|cows|cattle|milk)\b", dict(props=["cow"])),
+    (r"\b(sheep|wool|shepherd)\b", dict(props=["sheep"])),
+    (r"\b(dog|dogs|puppy)\b", dict(props=["dog"])),
+    (r"\b(barrel|barrels|wine|beer)\b", dict(props=["barrel"])),
+    (r"\b(coin|coins|tax|taxes|salary|wage|wages|earn\w*|profit|trade|trading|sell|sold|buy|bought)\b", dict(props=["coin"])),
+    (r"\b(cannon|artillery|gun|guns|weapon\w*|firearm\w*)\b", dict(props=["cannon"])),
+    (r"\b(tank|tanks)\b", dict(props=["tank"])),
+    (r"\b(plane|planes|airplane|bomber|aircraft)\b", dict(props=["plane"])),
+    (r"\b(tower|fortress|wall|walls|siege)\b", dict(props=["tower"])),
+    (r"\b(shield|armor|armour)\b", dict(props=["shield"])),
+    (r"\b(spear|spears|lance)\b", dict(props=["spear"])),
+    (r"\b(throne|crown|kingdom)\b", dict(props=["throne"])),
+    (r"\b(school|teach\w*|class|lesson|board|math|numbers?)\b", dict(props=["blackboard"])),
+    (r"\b(sunset|evening|dusk|golden)\b", dict(tod="sunset")),
+    (r"\b(night|midnight|dark|moonlight)\b", dict(tod="night")),
     (r"\b(jungle|forest|rainforest|swamp|prehistoric|dinosaur|carboniferous|cretaceous|jurassic)\b", dict(setting="forest", props=["fern"])),
     (r"\b(desert|sahara|dune|egypt|pyramid|pharaoh)\b", dict(setting="desert", props=["pyramid", "cactus"])),
     (r"\b(ocean|sea|beach|island|shore|coast|cliff)\b", dict(setting="sea", props=["boat"])),
@@ -510,6 +596,20 @@ KW = [  # (regex, dict(setting?, props?, expr?, pose?))
 
 
 CASTKW = [
+    (r"\b(army|armies|soldiers?|military|troops?|regiment|infantry|war|invade\w*|invasion)\b", "soldier"),
+    (r"\b(general|commander|marshal|dictator)\b", "general"),
+    (r"\b(viking\w*|norse|raid\w*)\b", "viking"),
+    (r"\b(roman|rome|gladiator|legion\w*|caesar)\b", "roman"),
+    (r"\b(pharaoh|egypt\w*|pyramids?)\b", "pharaoh"),
+    (r"\b(farmer|farm|harvest|crops?|field|fields|village\w*|peasants?|serf\w*|villagers?)\b", "peasant"),
+    (r"\b(wizard|magic\w*|witch|sorcer\w*|spell)\b", "wizard"),
+    (r"\b(police|cop|arrest\w*|crime|criminal|thief|prison)\b", "police"),
+    (r"\b(chef|cook\w*|restaurant|kitchen)\b", "chef"),
+    (r"\b(teacher|class|classroom|student|lesson|school)\b", "teacher"),
+    (r"\b(ninja|samurai|assassin|spy)\b", "ninja"),
+    (r"\b(alien|ufo|extraterrestrial)\b", "alien"),
+    (r"\b(worker|workers|construction|factory|labou?r|build\w*|mine|miner\w*)\b", "worker"),
+    (r"\b(queen|princess)\b", "queen"),
     (r"\b(king|queen|royal|throne|emperor|pharaoh|monarch)\b", "king"),
     (r"\b(knight|soldier|army|warrior|battle|guard)\b", "knight"),
     (r"\b(scientist|experiment|lab|laborator\w*|professor|research\w*|inventor|invent\w*)\b", "scientist"),
@@ -560,6 +660,8 @@ def keyword_plan(text, i, prev):
                 spec["expr"] = v["expr"]
             if "pose" in v and spec["pose"] == "stand":
                 spec["pose"] = v["pose"]
+            if "tod" in v and "tod" not in spec:
+                spec["tod"] = v["tod"]
     spec.pop("_set", None)
     spec["props"] = props[:3] or [S.PROP_NAMES[(i * 7) % len(S.PROP_NAMES)]]
     poses = list(T.POSES)
@@ -571,6 +673,11 @@ def keyword_plan(text, i, prev):
     spec["label"] = caps[0].upper() if caps and i % 2 == 0 else ""
     spec["hero_side"] = "left" if i % 2 == 0 else "right"
     spec["chars"] = keyword_chars(text, i, spec)
+    spec["shot"] = ["medium", "wide", "close", "medium", "wide", "medium"][i % 6] if "tod" not in spec or i % 2 else "wide"
+    if spec["shot"] == "close" and len(spec["chars"]) > 1:
+        spec["shot"] = "medium"
+    if "army" in spec["props"] or "crowd" in spec["props"]:
+        spec["shot"] = "wide"
     return spec
 
 
@@ -590,8 +697,12 @@ def _prompt(title, lines, start, prev_setting):
         "otherwise one; 'hero' is the everyman narrator and should appear in most scenes about 'you', but use the matching specialist when the story is about them "
         "(a king scene shows the king, a lab scene the scientist...) and keep each person looking the same throughout the video), "
         f"character names ('who') with looks: {'; '.join(k + '=' + v for k, v in T.CAST_INFO.items())}; "
+        "any 'who' may add a skin tone like 'soldier:brown' (options: white, peach, tan, brown, dark) - vary skin tones across people for a diverse world; "
+        "use props 'army' or 'crowd' (a whole group, wide shot) when the line is about many people; use settings street/village/field for medieval towns and farmland, city for modern cities; "
         f"poses (start/end body language) from: {', '.join(T.POSES)}; expr (face) from: {', '.join(T.EXPR)}, "
         "\"hero_side\" (left or right; alternate for variety), "
+        "\"shot\" (camera framing: wide = small characters in a big world, use for places, crowds, armies and establishing; medium = normal; close = big face for emotion or a punchline; vary them from line to line like a film editor), "
+        "\"tod\" (time of day: day, sunset or night; keep it consistent within a story beat), "
         "and \"label\" (optional 1-3 word ALL-CAPS name or number worth showing on screen, e.g. a place, year or amount taken from the line; empty string if none). "
         "Match emotion to the line (fear when danger, smug when clever, shocked at surprises). "
         f"Return ONLY a JSON array of exactly {len(lines)} objects in order.\n\n{listing}")
@@ -604,7 +715,7 @@ def _clean(o, f):
     p2 = o.get("pose2") if o.get("pose2") in T.POSES else p1
     chars = []
     for c in (o.get("chars") or [])[:2]:
-        if isinstance(c, dict) and c.get("who") in T.DESIGNS:
+        if isinstance(c, dict) and str(c.get("who", "")).split(":")[0] in T.DESIGNS:
             q1 = c.get("pose") if c.get("pose") in T.POSES else "stand"
             q2 = c.get("pose2") if c.get("pose2") in T.POSES else q1
             chars.append(dict(who=c["who"], pose=q1, pose2=q2, expr=c.get("expr") if c.get("expr") in T.EXPR else "neutral"))
@@ -615,6 +726,8 @@ def _clean(o, f):
         props=props, pose=p1, pose2=p2,
         expr=o.get("expr") if o.get("expr") in T.EXPR else f["expr"],
         hero_side="right" if str(o.get("hero_side", "")).lower().startswith("r") else "left",
+        shot=o.get("shot") if o.get("shot") in ("wide", "medium", "close") else f.get("shot", "medium"),
+        tod=o.get("tod") if o.get("tod") in ("day", "sunset", "night") else f.get("tod", "day"),
         label=re.sub(r"[^A-Z0-9 '$%&.,!?-]", "", str(o.get("label") or "").upper())[:24])
 
 

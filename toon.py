@@ -142,9 +142,23 @@ def _dir(a):
     return math.sin(r), math.cos(r)
 
 
-def _d(shirt, pants=JEANS, shoes=WHITE, hair=None, hat=None, acc=(), headc=WHITE, scale=1.0, legs="pants", sleeve=None):
+PEACH = (250, 222, 196)
+SKINS = {"white": WHITE, "peach": PEACH, "tan": (232, 190, 140), "brown": (176, 122, 84), "dark": (112, 74, 52)}
+
+
+def _d(shirt, pants=JEANS, shoes=WHITE, hair=None, hat=None, acc=(), headc=WHITE, scale=1.0, legs="pants", sleeve=None, beardc=None):
     return dict(shirt=shirt, pants=pants, shoes=shoes, hair=hair, hat=hat, acc=tuple(acc), headc=headc, scale=scale, legs=legs,
-                sleeve=sleeve or shirt)
+                sleeve=sleeve or shirt, beardc=beardc)
+
+
+def design_for(who):
+    """'king' or 'king:dark' -> design dict (skin override)."""
+    base, _, skin = str(who).partition(":")
+    des = DESIGNS.get(base, DESIGNS["hero"])
+    if skin in SKINS:
+        des = dict(des)
+        des["headc"] = SKINS[skin]
+    return des
 
 
 DESIGNS = {
@@ -164,6 +178,21 @@ DESIGNS = {
     "woman":     _d((120, 90, 190), pants=(60, 60, 80), hair=("bob", (40, 30, 30)), acc=(), shoes=(40, 40, 50)),
     "cowboy":    _d((200, 80, 60), pants=(70, 100, 150), hat=("cowboy", (150, 100, 60)), acc=("bandanna",), shoes=(110, 70, 40)),
     "doctor":    _d((240, 246, 250), pants=(70, 160, 170), hair=("short", (90, 60, 40)), acc=("coat", "mask"), sleeve=(240, 246, 250)),
+    "soldier":   _d((92, 112, 72), pants=(80, 98, 64), shoes=(50, 44, 36), hat=("armyhelmet", (84, 102, 64)), acc=("belt", "stubble"), sleeve=(92, 112, 72), headc=PEACH),
+    "general":   _d((64, 88, 66), pants=(54, 74, 56), shoes=(30, 26, 24), hat=("peaked", (64, 88, 66)), acc=("medals", "mustache"), sleeve=(64, 88, 66), headc=PEACH),
+    "viking":    _d((150, 104, 66), pants=(96, 76, 56), shoes=(70, 50, 36), hat=("viking", (160, 164, 176)), acc=("beard", "fur"), beardc=(206, 120, 52), headc=PEACH),
+    "roman":     _d((196, 44, 52), pants=(196, 44, 52), shoes=(150, 100, 60), hat=("roman", (214, 170, 60)), acc=("belt",), legs="bare", sleeve=(196, 44, 52), headc=PEACH),
+    "pharaoh":   _d((246, 240, 226), pants=(246, 240, 226), shoes=(214, 170, 60), hat=("nemes", (40, 90, 190)), acc=("dress", "collar"), legs="bare", headc=(214, 160, 110)),
+    "queen":     _d((120, 50, 160), hair=("long", (236, 196, 90)), hat=("crown", (255, 206, 52)), acc=("dress",), legs="bare", shoes=(120, 50, 160), headc=PEACH),
+    "farmer":    _d((200, 70, 60), pants=(60, 100, 170), shoes=(110, 76, 50), hat=("safari", (232, 200, 110)), acc=("stubble",), headc=(232, 190, 140)),
+    "peasant":   _d((140, 104, 70), pants=(96, 84, 70), shoes=(70, 56, 44), hat=("cap", (110, 92, 72)), acc=("stubble", "patch2"), headc=PEACH),
+    "wizard":    _d((70, 60, 160), hat=("wizard", (70, 60, 160)), acc=("beard", "dress"), legs="bare", shoes=(70, 60, 160)),
+    "police":    _d((50, 70, 130), pants=(40, 56, 104), shoes=(24, 24, 28), hat=("peaked", (50, 70, 130)), acc=("badge",), sleeve=(50, 70, 130), headc=(176, 122, 84)),
+    "chef":      _d((250, 250, 252), pants=(70, 74, 84), hat=("chef", (252, 252, 254)), acc=("mustache",), sleeve=(250, 250, 252), headc=PEACH),
+    "teacher":   _d((150, 100, 70), pants=(70, 66, 80), hair=("bun", (60, 40, 30)), acc=("glasses",), shoes=(60, 44, 36), headc=(232, 190, 140)),
+    "ninja":     _d((30, 30, 36), pants=(30, 30, 36), shoes=(30, 30, 36), hat=("ninja", (30, 30, 36)), sleeve=(30, 30, 36)),
+    "alien":     _d((90, 180, 120), pants=(60, 130, 90), shoes=(60, 130, 90), headc=(140, 210, 110), acc=("antenna",)),
+    "worker":    _d((240, 130, 40), pants=(60, 80, 110), shoes=(70, 56, 44), hat=("hardhat", (255, 206, 52)), acc=("stubble",), headc=(176, 122, 84)),
 }
 CAST_NAMES = list(DESIGNS)
 CAST_INFO = {
@@ -171,12 +200,15 @@ CAST_INFO = {
     "knight": "armoured knight", "king": "king with crown, beard and red cape", "caveman": "caveman in fur", "astronaut": "astronaut in a helmet",
     "pirate": "pirate with eyepatch", "explorer": "safari explorer", "oldman": "bald old man with beard and glasses", "kid": "small spiky-haired kid",
     "boss": "boss in a black suit and tie", "robot": "grey robot", "woman": "woman with a bob haircut", "cowboy": "cowboy with hat",
-    "doctor": "doctor in a white coat", }
+    "doctor": "doctor in a white coat", "soldier": "soldier in army helmet", "general": "army general with medals", "viking": "viking with horned helmet and red beard",
+    "roman": "roman soldier with crest helmet", "pharaoh": "egyptian pharaoh", "queen": "queen with crown", "farmer": "farmer in straw hat",
+    "peasant": "poor medieval villager in cap", "wizard": "wizard with pointy hat", "police": "police officer", "chef": "chef in tall hat",
+    "teacher": "teacher with glasses", "ninja": "ninja in black", "alien": "green alien", "worker": "construction worker in hard hat", }
 
 
 def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design=None):
     """Returns (RGBA image, feet_y, hip_xy).  px = pixels per head-radius (final scale)."""
-    D = design if isinstance(design, dict) else DESIGNS.get(design or "hero", DESIGNS["hero"])
+    D = design if isinstance(design, dict) else design_for(design or "hero")
     acc = D["acc"]
     s = px * SS
     ow = max(3.0, 0.075 * s)
@@ -292,6 +324,18 @@ def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design
     if "vest" in acc:
         stroke(d, [U(-0.3, -1.72), U(-0.35, -0.1)], ow * 1.2, (130, 100, 60))
         stroke(d, [U(0.3, -1.72), U(0.35, -0.1)], ow * 1.2, (130, 100, 60))
+    if "belt" in acc:
+        stroke(d, [U(-0.68, -0.22), U(0.68, -0.22)], ow * 1.6, (60, 44, 30))
+        d.rectangle((U(0, -0.22)[0] - 0.1 * s, U(0, -0.22)[1] - 0.1 * s, U(0, -0.22)[0] + 0.1 * s, U(0, -0.22)[1] + 0.1 * s), fill=(214, 170, 60), outline=INK)
+    if "medals" in acc:
+        for k_, c_ in enumerate(((255, 206, 52), (226, 68, 62), (255, 206, 52))):
+            circle(d, U(0.28 - k_ * 0.18, -1.2 + (k_ % 2) * 0.12), 0.09 * s, c_, ow * 0.5)
+    if "badge" in acc:
+        blob(d, [U(0.2, -1.4), U(0.4, -1.4), U(0.4, -1.1), U(0.3, -1.0), U(0.2, -1.1)], (255, 206, 52), ow * 0.6, sm=False)
+    if "collar" in acc:
+        blob(d, [U(-0.62, -1.72), U(0.62, -1.72), U(0.5, -1.2), U(0, -1.0), U(-0.5, -1.2)], (214, 170, 60), ow * 0.8, steps=4)
+    if "patch2" in acc:
+        d.rectangle((U(-0.4, -0.7)[0], U(-0.4, -0.7)[1], U(-0.4, -0.7)[0] + 0.3 * s, U(-0.4, -0.7)[1] + 0.3 * s), fill=(176, 140, 100), outline=INK, width=int(ow * 0.5))
     if "patch" in acc:
         circle(d, U(0.3, -1.2), 0.17 * s, (60, 110, 220), ow * 0.6)
     # jeans waist (belt area) small
@@ -306,6 +350,8 @@ def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design
     hair = D["hair"]
     if hair and hair[0] == "long":
         blob(d, [(hx - R * 1.05, hy - R * 0.2), (hx - R * 1.1, hy + R * 1.2), (hx + R * 1.1, hy + R * 1.2), (hx + R * 1.05, hy - R * 0.2)], hair[1], ow)
+    if hair and hair[0] == "bun":
+        circle(d, (hx, hy - R * 1.15), R * 0.32, hair[1], ow)
     if hair and hair[0] == "ponytail":
         blob(d, [(hx + R * .9, hy - R * .3), (hx + R * 1.7, hy + R * .1), (hx + R * 1.5, hy + R * 1.1), (hx + R * 1.0, hy + R * .3)], hair[1], ow)
     if "antenna" in acc:
@@ -347,7 +393,7 @@ def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design
     # face extras behind mouth
     if "beard" in acc:
         blob(d, [fp(-0.85, 0.2), fp(-0.7, 0.9), fp(0, 1.25), fp(0.7, 0.9), fp(0.85, 0.2), fp(0.5, 0.45), fp(0, 0.5), fp(-0.5, 0.45)],
-             WHITE if (D["hat"] and D["hat"][0] == "crown") or D["hair"] == ("bald", None) else (90, 60, 40), ow, steps=5)
+             D["beardc"] or (WHITE if (D["hat"] and D["hat"][0] in ("crown", "wizard")) or D["hair"] == ("bald", None) else (90, 60, 40)), ow, steps=5)
     # mouth
     m = e["mouth"]
     mo = mouth_open
@@ -395,7 +441,7 @@ def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design
         blob(d, [fp(-0.6, 0.18), fp(0.6, 0.18), fp(0.5, 0.75), fp(-0.5, 0.75)], (170, 220, 236), ow * 0.7, sm=False)
     if "bandanna" in acc:
         stroke(d, [(hx - R * 0.6, hy + R * 1.0), (hx, hy + R * 1.25), (hx + R * 0.6, hy + R * 1.0)], ow * 3, (220, 50, 50))
-    if hair and hair[0] in ("short", "spiky", "wild", "messy", "bob", "long", "ponytail"):
+    if hair and hair[0] in ("short", "spiky", "wild", "messy", "bob", "long", "ponytail", "bun"):
         st, col = hair
         a0, a1 = 200, 340
         arc = [(hx + math.cos(math.radians(a)) * R * 1.03, hy + math.sin(math.radians(a)) * R * 1.03) for a in range(a0, a1 + 1, 10)]
@@ -442,6 +488,49 @@ def draw_hero(pose, expr, px, blinking=False, flip=False, mouth_open=0.0, design
         elif kind == "bandana":
             stroke(d, [(hx - R * 1.0, hy - R * 0.35), (hx, hy - R * 0.62), (hx + R * 1.0, hy - R * 0.35)], ow * 3.4, col)
             blob(d, [(hx + R * .95, hy - R * .38), (hx + R * 1.5, hy - R * .1), (hx + R * 1.25, hy - R * .55)], col, ow * 0.7, sm=False)
+        elif kind in ("armyhelmet", "hardhat", "roman", "viking", "peaked", "nemes", "cap", "wizard", "chef", "ninja"):
+            dome = [(hx + math.cos(math.radians(a)) * R * 1.08, hy + math.sin(math.radians(a)) * R * 1.08) for a in range(180, 361, 10)]
+            if kind == "ninja":
+                circle(d, (hx, hy), R * 1.03, col, ow)
+                d.rectangle((hx - R * 0.8, hy - R * 0.38, hx + R * 0.8, hy + R * 0.0), fill=D["headc"] if D["headc"] != WHITE else (255, 226, 200))
+                for sd in (-1, 1):
+                    circle(d, (hx + sd * R * 0.34, hy - R * 0.2), R * 0.08, INK, 0)
+            elif kind == "wizard":
+                ellipse(d, (hx, hy - R * 0.7), R * 1.5, R * 0.26, col, ow)
+                blob(d, [(hx - R * .95, hy - R * .72), (hx + R * .25, hy - R * 2.5), (hx + R * .95, hy - R * .72)], col, ow, sm=False)
+                circle(d, (hx - R * .1, hy - R * 1.2), R * .1, (255, 206, 52), 0)
+            elif kind == "chef":
+                for cx_, cy_, r_ in ((-0.6, -1.25, 0.5), (0.0, -1.5, 0.6), (0.6, -1.25, 0.5)):
+                    circle(d, (hx + R * cx_, hy + R * cy_), R * r_, col, ow)
+                d.rectangle((hx - R * 0.9, hy - R * 1.0, hx + R * 0.9, hy - R * 0.6), fill=col, outline=INK, width=int(ow))
+            elif kind == "peaked":
+                blob(d, dome + [(hx + R * 1.08, hy - R * 0.4), (hx - R * 1.08, hy - R * 0.4)], col, ow, steps=3)
+                ellipse(d, (hx + R * 0.15, hy - R * 0.42), R * 1.1, R * 0.17, shade(col, 0.7), ow * 0.8)
+                circle(d, (hx, hy - R * 0.85), R * 0.1, (255, 206, 52), 0)
+            elif kind == "cap":
+                blob(d, [(hx + math.cos(math.radians(a)) * R * 1.04, hy + math.sin(math.radians(a)) * R * 1.04) for a in range(190, 351, 10)] + [(hx + R * 0.9, hy - R * 0.5), (hx - R * 0.9, hy - R * 0.5)], col, ow, steps=3)
+                ellipse(d, (hx + R * 0.45, hy - R * 0.5), R * 0.55, R * 0.12, shade(col, 0.75), ow * 0.8)
+            elif kind == "nemes":
+                for sd in (-1, 1):
+                    for k_ in range(5):
+                        yy0 = hy - R * 0.1 + k_ * R * 0.22
+                        blob(d, [(hx + sd * R * 0.95, yy0), (hx + sd * R * 1.3, yy0 + R * 0.05), (hx + sd * R * 1.3, yy0 + R * 0.27), (hx + sd * R * 0.95, yy0 + R * 0.22)],
+                             (214, 170, 60) if k_ % 2 == 0 else col, ow * 0.5, sm=False)
+                blob(d, dome + [(hx + R * 1.08, hy - R * 0.1), (hx - R * 1.08, hy - R * 0.1)], col, ow, steps=3)
+                for k_ in range(4):
+                    stroke(d, [(hx - R * 0.95 + k_ * R * 0.65, hy - R * 0.95), (hx - R * 0.95 + k_ * R * 0.65, hy - R * 0.15)], ow * 0.8, (214, 170, 60))
+            else:   # armyhelmet / hardhat / roman / viking
+                blob(d, dome + [(hx + R * 1.08, hy - R * 0.05), (hx - R * 1.08, hy - R * 0.05)], col, ow, steps=3)
+                if kind in ("armyhelmet", "hardhat"):
+                    stroke(d, [(hx - R * 1.1, hy - R * 0.1), (hx + R * 1.1, hy - R * 0.1)], ow * 1.4, shade(col, 0.7))
+                if kind == "hardhat":
+                    stroke(d, [(hx, hy - R * 1.08), (hx, hy - R * 0.6)], ow * 1.4, shade(col, 0.75))
+                if kind == "roman":
+                    blob(d, [(hx - R * .9, hy - R * .6), (hx - R * .5, hy - R * 1.5), (hx + R * .5, hy - R * 1.5), (hx + R * .9, hy - R * .6), (hx + R * .4, hy - R * 1.0), (hx - R * .4, hy - R * 1.0)], (200, 40, 50), ow, sm=False)
+                if kind == "viking":
+                    for sd in (-1, 1):
+                        blob(d, [(hx + sd * R * 1.0, hy - R * 0.55), (hx + sd * R * 1.5, hy - R * 0.8), (hx + sd * R * 1.5, hy - R * 1.45), (hx + sd * R * 1.25, hy - R * 0.95),
+                                 (hx + sd * R * 0.9, hy - R * 0.4)], (244, 236, 214), ow * 0.9, sm=False)
         elif kind in ("cowboy", "safari"):
             ellipse(d, (hx, hy - R * 0.72), R * 1.45, R * 0.28, col, ow)
             blob(d, [(hx - R * .62, hy - R * .72), (hx - R * .55, hy - R * 1.4), (hx + R * .55, hy - R * 1.4), (hx + R * .62, hy - R * .72)], col, ow, steps=4)

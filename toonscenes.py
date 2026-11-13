@@ -203,7 +203,8 @@ def p_sun(d, x, y, s, ow, rng):
 def p_moon(d, x, y, s, ow, rng):
     cy = y - s * .5
     circle(d, (x, cy), s * .32, (250, 244, 210), ow)
-    circle(d, (x + s * .14, cy - s * .08), s * .27, (22, 28, 60), 0, outline=None)
+    for ox, oy, r in ((-.1, -.08, .06), (.08, .06, .08), (-.04, .14, .04)):
+        circle(d, (x + s * ox, cy + s * oy), s * r, (226, 218, 176), 0)
 
 
 def p_crown(d, x, y, s, ow, rng):
@@ -681,3 +682,357 @@ SETTINGS = {
     "snow": s_snow, "cave": s_cave, "ancient": s_ancient, "lab": s_lab, "night": s_night, "underwater": s_under, "plain": s_plain, "map": s_map,
 }
 SETTING_NAMES = list(SETTINGS)
+
+
+# ============================================================================= v10: perspective streets/fields + more props
+def _sky_grad(d, W, H, top, bot, h):
+    for y in range(0, int(h), 4):
+        c = mix(top, bot, y / max(1, h))
+        d.rectangle((0, y, W, y + 4), fill=c)
+
+
+def _persp(W, H):
+    vpx, vpy = W / 2, H * 0.46
+    G = H * 0.56
+    return vpx, vpy, G
+
+
+def _street(d, W, H, ow, rng, modern=False, ground=(196, 182, 156)):
+    vpx, vpy, G = _persp(W, H)
+    _sky_grad(d, W, H, (150, 196, 232), (252, 232, 200), vpy + 4)
+    for _ in range(2):
+        cloud(d, rng.uniform(0.2, 0.8) * W, rng.uniform(0.05, 0.22) * H, H * rng.uniform(0.05, 0.08), ow)
+    # distant hazy strip
+    d.rectangle((0, vpy - H * 0.01, W, vpy + 4), fill=(214, 206, 190))
+    d.rectangle((0, vpy, W, H), fill=ground)
+    # cobbles / asphalt
+    z = 1.0
+    prev_y = H + 10
+    rowi = 0
+    line = shade(ground, 0.8 if not modern else 0.7)
+    while z < 14:
+        z2 = z * 1.16
+        y1 = vpy + G / z2
+        k = 1.0 / z
+        if y1 > H + 5 or prev_y < vpy:
+            z = z2
+            continue
+        yy1 = vpy + G / z
+        d.line([(0, yy1), (W, yy1)], fill=line, width=max(1, int(ow * 0.6 * k + 1)))
+        if not modern:
+            bw = W * 0.30 * k
+            off = (rowi % 2) * bw / 2
+            x = vpx - W * 4 * k + off
+            x = (x - vpx) % bw + vpx - bw * int((vpx) / bw + 2)
+            while x < W:
+                if x > -bw:
+                    d.line([(x, yy1), (x - (x - vpx) * 0.16, vpy + G / z2)], fill=line, width=max(1, int(ow * 0.5 * k + 1)))
+                x += bw
+        rowi += 1
+        z = z2
+    if modern:   # lane markings
+        for i in range(10):
+            z0 = 1.3 * (1.25 ** i)
+            za, zb = z0, z0 * 1.12
+            for sx in (-0.5,):
+                pass
+            d.polygon([(vpx - 0.04 * W / za, vpy + G / za), (vpx + 0.04 * W / za, vpy + G / za),
+                       (vpx + 0.04 * W / zb, vpy + G / zb), (vpx - 0.04 * W / zb, vpy + G / zb)], fill=(244, 240, 214))
+    # buildings both sides
+    pal_v = [(236, 212, 168), (214, 176, 140), (190, 206, 170), (226, 190, 160), (200, 190, 214)]
+    pal_c = [(150, 164, 190), (178, 150, 140), (130, 156, 176), (206, 192, 160), (162, 176, 150)]
+    roofs = [(196, 80, 60), (170, 90, 70), (140, 70, 60)]
+    for side in (-1, 1):
+        z = 0.95
+        i = 0
+        while z < 11:
+            dz = z * rng.uniform(0.45, 0.7)
+            z2 = z + dz
+            Hh = H * (rng.uniform(0.55, 0.95) if not modern else rng.uniform(0.9, 1.7))
+            X = side * W * (0.72 if i == 0 else 0.62)
+            col = (pal_v if not modern else pal_c)[(i + (side > 0) * 2) % 5]
+            xa, xb = vpx + X / z, vpx + X / z2
+            ga, gb = vpy + G / z, vpy + G / z2
+            ta, tb = vpy + (G - Hh) / z, vpy + (G - Hh) / z2
+            quad = [(xa, ta), (xb, tb), (xb, gb), (xa, ga)]
+            d.polygon(quad, fill=col)
+            stroke(d, quad, max(2, ow / (z ** 0.5)), INK, closed=True)
+            if not modern:   # roof band
+                rh = H * 0.16
+                ra, rb = vpy + (G - Hh - rh) / z, vpy + (G - Hh - rh) / z2
+                roof = [(xa, ta), (xa - side * W * 0.05 / z, ta - 0), (xb, rb), (xb, tb)]
+                d.polygon([(xa, ta), (xa, ra), (xb, rb), (xb, tb)], fill=roofs[i % 3])
+                stroke(d, [(xa, ta), (xa, ra), (xb, rb), (xb, tb)], max(2, ow / (z ** 0.5)), INK, closed=True)
+            # windows (bilinear on facade)
+            def P(u, v):
+                x = xa + (xb - xa) * u
+                top = ta + (tb - ta) * u
+                gr = ga + (gb - ga) * u
+                return x, gr + (top - gr) * v
+            cols_n = 3
+            rows_n = 3 if not modern else 6
+            for cx_ in range(cols_n):
+                for ry in range(rows_n):
+                    u0 = (cx_ + 0.2) / cols_n
+                    u1 = (cx_ + 0.75) / cols_n
+                    v0 = 0.18 + ry * (0.74 / rows_n)
+                    v1 = v0 + 0.5 / rows_n
+                    if ry == 0 and cx_ == 1 and not modern:
+                        pts = [P(u0, 0.02), P(u1, 0.02), P(u1, v1 + 0.05), P(u0, v1 + 0.05)]
+                        d.polygon(pts, fill=(130, 86, 56))
+                    else:
+                        pts = [P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)]
+                        d.polygon(pts, fill=(170, 214, 240) if not modern else (140, 200, 232))
+                    stroke(d, pts, max(1, ow * 0.7 / (z ** 0.5)), INK, closed=True)
+            z = z2
+            i += 1
+    return vpy + G / 2.2
+
+
+def s_street(d, W, H, ow, rng):
+    return _street(d, W, H, ow, rng, modern=False)
+
+
+def s_city2(d, W, H, ow, rng):
+    return _street(d, W, H, ow, rng, modern=True, ground=(108, 112, 122))
+
+
+def s_field(d, W, H, ow, rng):
+    vpx, vpy, G = _persp(W, H)
+    _sky_grad(d, W, H, (140, 190, 232), (252, 226, 190), vpy + 4)
+    cloud(d, W * 0.2, H * 0.12, H * 0.06, ow)
+    cloud(d, W * 0.75, H * 0.2, H * 0.05, ow)
+    d.rectangle((0, vpy, W, H), fill=(124, 176, 88))
+    cols = [(124, 176, 88), (214, 184, 80), (96, 150, 76), (192, 150, 70)]
+    n = 14
+    for i in range(-n, n):
+        a0, a1 = i / n, (i + 1) / n
+        col = cols[i % 4]
+        d.polygon([(vpx + a0 * W * 0.04, vpy), (vpx + a1 * W * 0.04, vpy), (vpx + a1 * W * 3.0, H * 1.1), (vpx + a0 * W * 3.0, H * 1.1)], fill=col)
+    for k in range(1, 9):
+        y = vpy + (H - vpy) * (k / 9) ** 1.9
+        d.line([(0, y), (W, y)], fill=(80, 120, 60), width=max(1, int(ow * 0.6)))
+    for x in (0.12, 0.88, 0.3, 0.7):
+        yy = vpy + H * 0.02
+        p_tree(d, W * x, yy, H * 0.08, ow * 0.6, rng)
+    return vpy + (H - vpy) * 0.42
+
+
+SETTINGS.update({"street": s_street, "city": s_city2, "village": s_street, "field": s_field})
+SETTING_NAMES[:] = list(SETTINGS)
+
+
+# ----------------------------------------------------------------------------- extra props
+def p_barrel(d, x, y, s, ow, rng):
+    w, h = s * .7, s
+    blob(d, [(x - w * .5, y), (x - w * .58, y - h * .5), (x - w * .5, y - h), (x + w * .5, y - h), (x + w * .58, y - h * .5), (x + w * .5, y)], (176, 120, 66), ow, steps=5)
+    for k in (0.2, 0.8):
+        stroke(d, [(x - w * .54, y - h * k), (x + w * .54, y - h * k)], ow * 1.4, (90, 70, 56))
+    for k in (-.25, 0, .25):
+        stroke(d, [(x + w * k, y - h * .05), (x + w * k, y - h * .95)], ow * .6, (130, 86, 50))
+    ellipse(d, (x, y - h), w * .5, h * .07, (210, 160, 100), ow)
+
+
+def p_coin(d, x, y, s, ow, rng):
+    cy = y - s * .5
+    circle(d, (x, cy), s * .4, YEL, ow)
+    circle(d, (x, cy), s * .28, (255, 232, 130), ow * .6)
+    d.text((x, cy), "$", font=_font(s * .4), fill=(190, 140, 20), anchor="mm")
+
+
+def p_blackboard(d, x, y, s, ow, rng):
+    stroke(d, [(x - s * .3, y), (x - s * .1, y - s * .55)], ow * 1.4, INK)
+    stroke(d, [(x + s * .3, y), (x + s * .1, y - s * .55)], ow * 1.4, INK)
+    blob(d, [(x - s * .5, y - s * .35), (x - s * .5, y - s * .95), (x + s * .5, y - s * .95), (x + s * .5, y - s * .35)], (40, 90, 70), ow * 1.2, sm=False)
+    d.rectangle((x - s * .5, y - s * .95, x + s * .5, y - s * .35), outline=BROWN, width=int(ow * 2))
+    for k in range(3):
+        stroke(d, [(x - s * .36, y - s * (.82 - k * .12)), (x + s * (.1 + k * .1), y - s * (.82 - k * .12))], ow * .7, (240, 240, 235))
+
+
+def p_hay(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .5, y), (x - s * .5, y - s * .45), (x - s * .2, y - s * .7), (x + s * .2, y - s * .7), (x + s * .5, y - s * .45), (x + s * .5, y)], (232, 196, 90), ow)
+    for k in (-.25, 0, .25):
+        stroke(d, [(x + s * k, y - s * .1), (x + s * k + s * .05, y - s * .55)], ow * .6, (190, 150, 50))
+
+
+def p_wagon(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .6, y - s * .2), (x - s * .6, y - s * .6), (x + s * .6, y - s * .6), (x + s * .6, y - s * .2)], (160, 104, 60), ow, sm=False)
+    for sd in (-1, 1):
+        circle(d, (x + sd * s * .38, y - s * .16), s * .16, (120, 80, 50), ow)
+        circle(d, (x + sd * s * .38, y - s * .16), s * .04, INK, 0)
+    stroke(d, [(x + s * .6, y - s * .4), (x + s * .95, y - s * .3)], ow * 1.4, INK)
+
+
+def p_shield(d, x, y, s, ow, rng):
+    cy = y - s * .5
+    blob(d, [(x - s * .32, cy - s * .35), (x + s * .32, cy - s * .35), (x + s * .3, cy + s * .1), (x, cy + s * .42), (x - s * .3, cy + s * .1)], (60, 90, 190), ow)
+    stroke(d, [(x, cy - s * .35), (x, cy + s * .4)], ow * 1.6, YEL)
+    stroke(d, [(x - s * .3, cy - s * .05), (x + s * .3, cy - s * .05)], ow * 1.6, YEL)
+
+
+def p_spear(d, x, y, s, ow, rng):
+    stroke(d, [(x, y), (x, y - s * .92)], s * .03 + ow * 2, INK)
+    stroke(d, [(x, y), (x, y - s * .92)], s * .03, BROWN)
+    blob(d, [(x - s * .05, y - s * .9), (x, y - s * 1.1), (x + s * .05, y - s * .9)], (210, 216, 226), ow * .8, sm=False)
+
+
+def p_cannon(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .5, y - s * .35), (x + s * .4, y - s * .6), (x + s * .5, y - s * .5), (x - s * .45, y - s * .2)], (60, 62, 72), ow)
+    for sd in (0,):
+        circle(d, (x - s * .1, y - s * .15), s * .17, BROWN, ow)
+        circle(d, (x - s * .1, y - s * .15), s * .04, INK, 0)
+
+
+def p_tower(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .22, y), (x - s * .22, y - s * .8), (x + s * .22, y - s * .8), (x + s * .22, y)], STONE, ow, sm=False)
+    blob(d, [(x - s * .3, y - s * .8), (x - s * .3, y - s * .95), (x + s * .3, y - s * .95), (x + s * .3, y - s * .8)], shade(STONE, 1.06), ow, sm=False)
+    blob(d, [(x - s * .32, y - s * .95), (x, y - s * 1.25), (x + s * .32, y - s * .95)], RED, ow, sm=False)
+    d.rectangle((x - s * .05, y - s * .6, x + s * .05, y - s * .4), fill=INK)
+
+
+def p_horse(d, x, y, s, ow, rng):
+    C = (156, 104, 64)
+    blob(d, [(x - s * .5, y - s * .45), (x - s * .4, y - s * .62), (x + s * .15, y - s * .62), (x + s * .3, y - s * .6), (x + s * .38, y - s * 1.0), (x + s * .6, y - s * 1.05),
+             (x + s * .66, y - s * .88), (x + s * .5, y - s * .8), (x + s * .4, y - s * .45), (x + s * .3, y - s * .3), (x - s * .4, y - s * .3)], C, ow, steps=4)
+    for lx in (-.38, -.2, .2, .34):
+        stroke(d, [(x + s * lx, y - s * .32), (x + s * lx, y)], s * .08 + ow * 2, INK)
+        stroke(d, [(x + s * lx, y - s * .32), (x + s * lx, y)], s * .08, C)
+    stroke(d, smooth([(x + s * .36, y - s * .98), (x + s * .3, y - s * .8), (x + s * .3, y - s * .62)], False, 5), ow * 2.5, (60, 40, 30))
+    circle(d, (x + s * .55, y - s * .95), s * .02, INK, 0)
+
+
+def p_chicken(d, x, y, s, ow, rng):
+    ellipse(d, (x, y - s * .4), s * .36, s * .3, WHITE, ow)
+    circle(d, (x + s * .28, y - s * .75), s * .17, WHITE, ow)
+    blob(d, [(x + s * .2, y - s * .94), (x + s * .26, y - s * 1.04), (x + s * .32, y - s * .94), (x + s * .38, y - s * 1.02), (x + s * .38, y - s * .9)], RED, ow * .7, sm=False)
+    blob(d, [(x + s * .42, y - s * .76), (x + s * .55, y - s * .72), (x + s * .42, y - s * .68)], ORG, ow * .6, sm=False)
+    circle(d, (x + s * .32, y - s * .78), s * .025, INK, 0)
+    for lx in (-.08, .1):
+        stroke(d, [(x + s * lx, y - s * .12), (x + s * lx, y)], ow * 1.2, ORG)
+    blob(d, [(x - s * .36, y - s * .5), (x - s * .6, y - s * .6), (x - s * .5, y - s * .4)], WHITE, ow * .7, sm=False)
+
+
+def p_cow(d, x, y, s, ow, rng):
+    ellipse(d, (x, y - s * .5), s * .5, s * .28, WHITE, ow)
+    for ox, oy in ((-.2, -.55), (.12, -.42)):
+        ellipse(d, (x + s * ox, y + s * oy), s * .12, s * .08, INK, 0)
+    blob(d, [(x + s * .4, y - s * .75), (x + s * .75, y - s * .78), (x + s * .78, y - s * .5), (x + s * .45, y - s * .45)], WHITE, ow)
+    circle(d, (x + s * .6, y - s * .66), s * .025, INK, 0)
+    for lx in (-.35, -.18, .22, .38):
+        stroke(d, [(x + s * lx, y - s * .3), (x + s * lx, y)], s * .07 + ow * 2, INK)
+        stroke(d, [(x + s * lx, y - s * .3), (x + s * lx, y)], s * .07, WHITE)
+
+
+def p_sheep(d, x, y, s, ow, rng):
+    for ox, oy in ((-.25, -.45), (0, -.55), (.25, -.45), (-.1, -.35), (.15, -.35)):
+        circle(d, (x + s * ox, y + s * oy), s * .2, (246, 244, 238), ow)
+    circle(d, (x + s * .42, y - s * .5), s * .13, (60, 56, 56), ow)
+    for lx in (-.15, .15):
+        stroke(d, [(x + s * lx, y - s * .2), (x + s * lx, y)], ow * 1.6, INK)
+
+
+def p_dog(d, x, y, s, ow, rng):
+    C = (190, 140, 90)
+    ellipse(d, (x, y - s * .4), s * .4, s * .2, C, ow)
+    circle(d, (x + s * .42, y - s * .58), s * .17, C, ow)
+    blob(d, [(x + s * .5, y - s * .7), (x + s * .6, y - s * .5), (x + s * .46, y - s * .62)], shade(C, .75), ow * .6, sm=False)
+    for lx in (-.28, -.1, .15, .3):
+        stroke(d, [(x + s * lx, y - s * .25), (x + s * lx, y)], ow * 1.8, INK)
+    stroke(d, [(x - s * .4, y - s * .45), (x - s * .6, y - s * .6)], ow * 1.8, C)
+
+
+def p_windmill(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .2, y), (x - s * .12, y - s * .7), (x + s * .12, y - s * .7), (x + s * .2, y)], (226, 210, 180), ow, sm=False)
+    blob(d, [(x - s * .16, y - s * .7), (x, y - s * .9), (x + s * .16, y - s * .7)], RED, ow, sm=False)
+    cx, cy = x, y - s * .72
+    for a in (45, 135, 225, 315):
+        r = math.radians(a)
+        blob(d, [(cx, cy), (cx + math.cos(r) * s * .5 - math.sin(r) * s * .06, cy + math.sin(r) * s * .5 + math.cos(r) * s * .06),
+                 (cx + math.cos(r) * s * .5 + math.sin(r) * s * .06, cy + math.sin(r) * s * .5 - math.cos(r) * s * .06)], (250, 246, 232), ow * .8, sm=False)
+
+
+def p_hut(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .4, y), (x - s * .4, y - s * .4), (x + s * .4, y - s * .4), (x + s * .4, y)], (180, 130, 80), ow, sm=False)
+    blob(d, [(x - s * .55, y - s * .38), (x, y - s * .85), (x + s * .55, y - s * .38)], (220, 190, 100), ow, sm=False)
+    blob(d, [(x - s * .1, y), (x - s * .1, y - s * .26), (x + s * .1, y - s * .26), (x + s * .1, y)], (80, 54, 36), ow * .8, sm=False)
+
+
+def p_tank(d, x, y, s, ow, rng):
+    G = (96, 112, 76)
+    blob(d, [(x - s * .6, y - s * .12), (x - s * .55, y - s * .3), (x + s * .55, y - s * .3), (x + s * .6, y - s * .12)], (60, 64, 56), ow)
+    blob(d, [(x - s * .35, y - s * .3), (x - s * .25, y - s * .55), (x + s * .25, y - s * .55), (x + s * .35, y - s * .3)], G, ow)
+    stroke(d, [(x + s * .2, y - s * .45), (x + s * .75, y - s * .5)], s * .06 + ow * 2, INK)
+    stroke(d, [(x + s * .2, y - s * .45), (x + s * .75, y - s * .5)], s * .06, G)
+
+
+def p_plane(d, x, y, s, ow, rng):
+    cy = y - s * .4
+    blob(d, [(x - s * .55, cy), (x - s * .3, cy - s * .1), (x + s * .5, cy - s * .08), (x + s * .62, cy), (x + s * .5, cy + s * .08), (x - s * .3, cy + s * .1)], (230, 232, 240), ow)
+    blob(d, [(x - s * .05, cy), (x - s * .25, cy + s * .35), (x + s * .1, cy + s * .05)], (200, 204, 214), ow * .8, sm=False)
+    blob(d, [(x - s * .5, cy - s * .05), (x - s * .6, cy - s * .3), (x - s * .38, cy - s * .08)], RED, ow * .8, sm=False)
+
+
+def p_fence(d, x, y, s, ow, rng):
+    for k in range(-3, 4):
+        blob(d, [(x + s * k * .16 - s * .04, y), (x + s * k * .16 - s * .04, y - s * .4), (x + s * k * .16 + s * .04, y - s * .4), (x + s * k * .16 + s * .04, y)], (200, 160, 100), ow * .8, sm=False)
+    for yy in (.15, .3):
+        stroke(d, [(x - s * .5, y - s * yy), (x + s * .5, y - s * yy)], ow * 1.2, INK)
+
+
+def p_well(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .3, y), (x - s * .3, y - s * .3), (x + s * .3, y - s * .3), (x + s * .3, y)], STONE, ow, sm=False)
+    stroke(d, [(x - s * .3, y - s * .3), (x - s * .3, y - s * .75), (x + s * .3, y - s * .75), (x + s * .3, y - s * .3)], ow * 1.4, INK)
+    blob(d, [(x - s * .4, y - s * .75), (x, y - s * .95), (x + s * .4, y - s * .75)], RED, ow, sm=False)
+
+
+def p_sack(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .3, y), (x - s * .35, y - s * .35), (x - s * .15, y - s * .55), (x + s * .15, y - s * .55), (x + s * .35, y - s * .35), (x + s * .3, y)], (214, 180, 120), ow)
+    stroke(d, [(x - s * .14, y - s * .52), (x + s * .14, y - s * .52)], ow * 1.6, (120, 84, 50))
+
+
+def p_scroll(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .4, y - s * .1), (x - s * .4, y - s * .5), (x + s * .4, y - s * .5), (x + s * .4, y - s * .1)], (244, 232, 196), ow, sm=False)
+    for k in range(3):
+        stroke(d, [(x - s * .3, y - s * (.4 - k * .1)), (x + s * .3, y - s * (.4 - k * .1))], ow * .6, (150, 120, 90))
+    ellipse(d, (x - s * .4, y - s * .3), s * .05, s * .22, (226, 208, 160), ow * .8)
+    ellipse(d, (x + s * .4, y - s * .3), s * .05, s * .22, (226, 208, 160), ow * .8)
+
+
+def p_torch(d, x, y, s, ow, rng):
+    stroke(d, [(x, y), (x, y - s * .7)], s * .07 + ow * 2, INK)
+    stroke(d, [(x, y), (x, y - s * .7)], s * .07, BROWN)
+    blob(d, [(x - s * .12, y - s * .7), (x - s * .1, y - s * .9), (x, y - s * 1.05), (x + s * .1, y - s * .9), (x + s * .12, y - s * .7)], ORG, ow * .8)
+
+
+def p_throne(d, x, y, s, ow, rng):
+    blob(d, [(x - s * .3, y), (x - s * .3, y - s * .9), (x - s * .15, y - s * 1.0), (x + s * .15, y - s * 1.0), (x + s * .3, y - s * .9), (x + s * .3, y)], (200, 150, 40), ow)
+    blob(d, [(x - s * .2, y - s * .15), (x - s * .2, y - s * .6), (x + s * .2, y - s * .6), (x + s * .2, y - s * .15)], (170, 40, 60), ow * .8, sm=False)
+
+
+def p_axe(d, x, y, s, ow, rng):
+    stroke(d, [(x, y), (x, y - s * .8)], s * .05 + ow * 2, INK)
+    stroke(d, [(x, y), (x, y - s * .8)], s * .05, BROWN)
+    blob(d, [(x, y - s * .8), (x + s * .3, y - s * .85), (x + s * .3, y - s * .5), (x, y - s * .55)], (200, 206, 216), ow, sm=False)
+
+
+def p_bow(d, x, y, s, ow, rng):
+    stroke(d, smooth([(x - s * .1, y), (x + s * .2, y - s * .4), (x - s * .1, y - s * .8)], False, 10), ow * 2, BROWN)
+    stroke(d, [(x - s * .1, y), (x - s * .1, y - s * .8)], ow * .6, INK)
+
+
+PROPS.update({"barrel": p_barrel, "coin": p_coin, "blackboard": p_blackboard, "hay": p_hay, "wagon": p_wagon, "shield": p_shield, "spear": p_spear,
+              "cannon": p_cannon, "tower": p_tower, "horse": p_horse, "chicken": p_chicken, "cow": p_cow, "sheep": p_sheep, "dog": p_dog,
+              "windmill": p_windmill, "hut": p_hut, "tank": p_tank, "plane": p_plane, "fence": p_fence, "well": p_well, "sack": p_sack,
+              "scroll": p_scroll, "torch": p_torch, "throne": p_throne, "axe": p_axe, "bow": p_bow, "army": None, "crowd": None})
+PROP_NAMES[:] = list(PROPS)
+AIR.update({"coin", "plane"})
+
+# size of each prop in hero-heights (hero = 1.0) so everything keeps a believable scale next to the characters
+SCALE = {"tree": 2.0, "palm": 3.0, "pine": 2.6, "fern": 0.8, "rock": 0.45, "boulder": 0.9, "campfire": 0.42, "house": 2.0, "castle": 3.0, "tent": 1.0,
+         "cactus": 1.1, "cloud": 0.9, "sun": 0.9, "moon": 0.9, "crown": 0.4, "chest": 0.5, "sword": 0.9, "book": 0.45, "money": 0.5, "computer": 0.55,
+         "phone": 0.4, "clock": 0.5, "rocket": 1.6, "planet": 1.2, "ufo": 1.0, "monster": 1.2, "dino": 2.2, "bug": 1.2, "boat": 1.6, "flag": 1.4,
+         "sign": 0.9, "skull": 0.4, "bomb": 0.4, "bulb": 0.55, "car": 1.3, "pyramid": 3.0, "mountain": 4.0, "volcano": 3.4, "wolf": 0.75, "pin": 0.8,
+         "arrow": 0.7, "grave": 0.75, "trophy": 0.55, "heart": 0.6, "question": 0.7, "exclaim": 0.7, "bed": 1.0, "food": 0.4, "gadget": 0.35,
+         "barrel": 0.75, "coin": 0.5, "blackboard": 1.15, "hay": 0.8, "wagon": 1.1, "shield": 0.75, "spear": 1.6, "cannon": 0.9, "tower": 3.2,
+         "horse": 1.3, "chicken": 0.5, "cow": 1.1, "sheep": 0.75, "dog": 0.55, "windmill": 3.0, "hut": 1.5, "tank": 1.4, "plane": 1.0,
+         "fence": 0.7, "well": 0.9, "sack": 0.5, "scroll": 0.45, "torch": 0.9, "throne": 1.2, "axe": 0.9, "bow": 1.0, "army": 1.0, "crowd": 1.0}
