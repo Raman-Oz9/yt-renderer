@@ -11,8 +11,10 @@ import os
 import random
 import re
 import subprocess
+import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -37,6 +39,7 @@ if STICKMAN:
              "no text, no letters, no words, no numbers, no logos, no captions, no watermark")
 MIN_SCENE, MAX_SCENE = 2.2, 4.6   # fast cuts keep still images feeling alive
 OVERLAP = 0.7                      # slow cross-fade between scenes
+PARALLEL = 4                       # pictures drawn at the same time
 
 
 _seen = set()
@@ -186,6 +189,8 @@ def write_prompts(scenes, title):
 
 
 def gemini_image(prompt, dest):
+    if not GEMINI_KEY or not _avail("gemini"):
+        return None
     for model in IMAGE_MODELS:
         try:
             r = requests.post(
@@ -204,21 +209,30 @@ def gemini_image(prompt, dest):
                     return model
         except Exception as exc:
             note(f"  {model} failed: {exc}")
+    cool("gemini", 600)   # no image from Gemini (no free image quota / busy): pause it
     return None
 
 
 def pollinations_image(prompt, dest):
+    """Pollinations (free, no key, slow): last resort."""
+    if cooling("pollinations"):
+        return None
     url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt[:900]) +
-           f"?width=1080&height=1920&nologo=true&model=flux&seed={random.randint(1, 10**6)}")
+           f"?width=768&height=1344&nologo=true&model=flux&seed={random.randint(1, 10**6)}")
     try:
-        r = requests.get(url, timeout=150)
+        r = requests.get(url, timeout=120)
         if r.status_code == 200 and len(r.content) > 5000 and r.headers.get(
                 "content-type", "").startswith("image"):
             Path(dest).write_bytes(r.content)
+            _poll_fails[0] = 0
             return "pollinations"
         note(f"  pollinations: {r.status_code} {len(r.content)}B")
     except Exception as exc:
         note(f"  pollinations failed: {exc}")
+    _poll_fails[0] += 1
+    if _poll_fails[0] >= 2:
+        cool("pollinations", 180)
+        _poll_fails[0] = 0
     return None
 
 
@@ -236,8 +250,16 @@ def hf_image(prompt, dest):
             img.save(str(dest), format="PNG")
             return "huggingface " + model.split("/")[-1]
         except Exception as exc:
-            note(f"  hf {model}: {re.sub(r'[\\s]+', ' ', str(exc))[:220]}")
+            note(f"  hf {model}: {re.sub(r'[\s]+', ' ', str(exc))[:220]}")
+    cool("hf", 600)
     return None
+
+
+def _cf_daily_spent(r):
+    """True only when Cloudflare says the DAILY free allowance is gone (error 4006).
+    A plain 429 can just be a short rate limit, so it must not switch Cloudflare off."""
+    t = (r.text or "").lower()
+    return "4006" in t or "daily free allocation" in t or "neurons" in t
 
 
 def cf_image(prompt, dest):
@@ -248,36 +270,81 @@ def cf_image(prompt, dest):
              ("@cf/stabilityai/stable-diffusion-xl-base-1.0",
               {"prompt": prompt[:1000], "width": 768, "height": 1344, "num_steps": 20})]
     for model, body in tries:
-        try:
-            r = requests.post(base + model, headers=hdr, json=body, timeout=150)
+        for n, wait in enumerate((0, 6, 15, 40)):      # a busy/rate-limited answer is retried, not fatal
+            if wait:
+                time.sleep(wait)
+            try:
+                r = requests.post(base + model, headers=hdr, json=body, timeout=150)
+            except Exception as exc:
+                note(f"  cf {model} failed: {exc}")
+                break
             if r.status_code == 200:
                 if r.headers.get("content-type", "").startswith("image"):
                     Path(dest).write_bytes(r.content)
                     return "cloudflare " + model.split("/")[-1]
-                data = r.json().get("result", {})
+                try:
+                    data = r.json().get("result") or {}
+                except Exception:
+                    data = {}
                 if data.get("image"):
                     Path(dest).write_bytes(base64.b64decode(data["image"]))
                     return "cloudflare " + model.split("/")[-1]
-            if r.status_code == 429:
+                note(f"  cf {model}: 200 but no image")
+                break
+            if _cf_daily_spent(r):
                 _dead.add("cf")
                 note("  cf: daily free allocation used up, skipping Cloudflare for this run")
                 return None
-            note(f"  cf {model}: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:200]}")
-        except Exception as exc:
-            note(f"  cf {model} failed: {exc}")
+            if r.status_code == 429 or r.status_code >= 500:
+                note(f"  cf {model}: {r.status_code} busy, retry {n + 1}")
+                continue
+            note(f"  cf {model}: {r.status_code} {re.sub(r'[\s]+', ' ', r.text)[:200]}")
+            break
+        else:
+            cool("cf", 120)   # still busy after the retries: pause Cloudflare for two minutes
+            return None
     return None
 
 
 _horde_timeouts = []
 _BUDGET_END = [float("inf")]   # wall-clock cutoff for picture generation
 _ovh_last = [0.0]
+_ovh_lock = threading.Lock()
+_cool = {}          # provider -> time until which it is paused (rate limited, not out of allowance)
+_poll_fails = [0]
+
+
+def cooling(p):
+    return time.time() < _cool.get(p, 0)
+
+
+def cool(p, secs):
+    _cool[p] = time.time() + secs
+
+
+def _avail(p):
+    return p not in _dead and not cooling(p)
+
+
+def _wait_until_available(limit=90):
+    """If every picture generator is paused, wait for the first one to come back."""
+    names = (["cf"] if CF_ACCOUNT and CF_TOKEN else []) + ["ovh"] + (["gemini"] if GEMINI_KEY else []) \
+        + (["hf"] if HF_TOKEN else []) + ["horde", "pollinations"]
+    live = [p for p in names if p not in _dead]
+    if not live or any(not cooling(p) for p in live):
+        return
+    wait = min(_cool.get(p, 0) for p in live) - time.time()
+    if wait > 0:
+        time.sleep(min(wait, limit))
 _dead = set()   # providers that hit a hard limit this run - skip them for the rest
 if os.environ.get("SKIP_CLOUDFLARE") == "1":   # test renders keep Cloudflare's daily allowance for real uploads
     _dead.add("cf")
 
 
 def ovh_image(prompt, dest):
-    """OVHcloud AI Endpoints, Stable Diffusion XL (free; anonymous = 2 req/min)."""
+    """OVHcloud AI Endpoints, Stable Diffusion XL (free; anonymous = 2 req/min, shared by runner IPs)."""
+    if cooling("ovh"):
+        return None
     url = "https://stable-diffusion-xl.endpoints.kepler.ai.cloud.ovh.net/api/text2image"
     hdr = {"Content-Type": "application/json", "accept": "application/octet-stream"}
     tok = os.environ.get("OVH_AI_TOKEN", "").strip()
@@ -287,46 +354,55 @@ def ovh_image(prompt, dest):
             "negative_prompt": ("text, letters, watermark, logo, blurry, soft, deformed, distorted, "
                                 "disfigured, extra limbs, low quality, oversaturated, cartoon")}
     fails = 0
-    for attempt in range(8):                      # patient: wait out the 2-per-minute limit
+    for attempt in range(4):
         if time.time() > _BUDGET_END[0]:
             return None
-        gap = 32 - (time.time() - _ovh_last[0])   # stay under the anonymous rate limit
-        if gap > 0:
-            time.sleep(gap)
-        try:
+        r = None
+        with _ovh_lock:                                 # one OVH call at a time, spaced under the rate limit
+            gap = 32 - (time.time() - _ovh_last[0])
+            if gap > 0:
+                time.sleep(gap)
+            try:
+                _ovh_last[0] = time.time()
+                r = requests.post(url, headers=hdr, json=body, timeout=150)
+            except Exception as exc:
+                note(f"  ovh failed: {exc}")
             _ovh_last[0] = time.time()
-            r = requests.post(url, headers=hdr, json=body, timeout=150)
-            _ovh_last[0] = time.time()
-            if r.status_code == 200 and len(r.content) > 5000:
-                Path(dest).write_bytes(r.content)
-                return "ovh sdxl"
-            if r.status_code in (401, 403):
-                note(f"  ovh: {r.status_code} blocked")
-                _dead.add("ovh")
-                return None
-            fails += 1
+        if r is not None and r.status_code == 200 and len(r.content) > 5000:
+            Path(dest).write_bytes(r.content)
+            return "ovh sdxl"
+        if r is not None and r.status_code in (401, 403):
+            note(f"  ovh: {r.status_code} blocked")
+            _dead.add("ovh")
+            return None
+        fails += 1
+        if r is not None:
             note(f"  ovh: {r.status_code} retrying ({fails})")
-            time.sleep(15 if r.status_code != 429 else 20)
-        except Exception as exc:
-            fails += 1
-            note(f"  ovh failed: {exc}; retrying ({fails})")
-            time.sleep(10)
+        if fails >= 3:
+            break
+        time.sleep(10)
+    cool("ovh", 240)   # rate limited: give the other generators a few minutes instead of waiting on it per scene
     return None
 
 
 def horde_image(prompt, dest):
     """AI Horde (free, crowdsourced, queue based)."""
+    if cooling("horde"):
+        return None
     base = "https://aihorde.net/api/v2/"
     hdr = {"apikey": os.environ.get("HORDE_API_KEY", "").strip() or "0000000000",
            "Client-Agent": "yt-renderer:1.0:github.com/Raman-Oz9/yt-renderer",
            "Content-Type": "application/json"}
+    anon = not os.environ.get("HORDE_API_KEY", "").strip()   # anonymous keys are refused above 696x696
+    W, H, ST = (512, 896, 20) if anon else (576, 1024, 25)
     body = {"prompt": prompt[:900] + " ### text, letters, watermark, blurry, deformed",
-            "params": {"width": 576, "height": 1024, "steps": 25, "n": 1},
+            "params": {"width": W, "height": H, "steps": ST, "n": 1},
             "nsfw": False, "censor_nsfw": True, "r2": True}
     try:
         r = requests.post(base + "generate/async", headers=hdr, json=body, timeout=60)
         if r.status_code not in (200, 202):
-            note(f"  horde submit: {r.status_code} {re.sub(r'[\\s]+', ' ', r.text)[:150]}")
+            note(f"  horde submit: {r.status_code} {re.sub(r'[\s]+', ' ', r.text)[:150]}")
+            cool("horde", 300)
             return None
         rid = r.json()["id"]
         deadline = time.time() + 150
@@ -393,7 +469,7 @@ def person_variant(scene_text, k):
 
 def gen_image(prompt, scene_text, dest):
     """People are only drawn by the best generator (Cloudflare); everywhere else a no-people version is used."""
-    if has_person(prompt) and ("cf" in _dead or not (CF_ACCOUNT and CF_TOKEN)):
+    if has_person(prompt) and (not _avail("cf") or not (CF_ACCOUNT and CF_TOKEN)):
         # Cloudflare unavailable (tests, or its daily cap is spent): start from the safer human framing on OVH
         prompt = person_variant(scene_text, 1)
     src = make_image(prompt, dest)
@@ -404,28 +480,32 @@ def gen_image(prompt, scene_text, dest):
 
 
 def make_image(prompt, dest):
-    """Free providers in order; a provider that hits its daily cap is skipped
-    for the rest of the run so we don't waste time on it."""
+    """Free providers in order. A provider that is out of daily allowance is skipped for the
+    rest of the run; one that is only rate limited is paused for a few minutes, so we never
+    sit and wait on it for every single scene."""
     if time.time() > _BUDGET_END[0]:
         return None
     person = has_person(prompt)
     for attempt in range(2):
-        if CF_ACCOUNT and CF_TOKEN and "cf" not in _dead:
+        if CF_ACCOUNT and CF_TOKEN and _avail("cf"):
             used = cf_image(prompt, dest)
             if used:
                 return used
-        if person:
-            # people only come from the two better generators: Cloudflare, then OVH (never Horde/Pollinations)
-            if "ovh" not in _dead:
-                used = ovh_image(prompt, dest)
-                if used:
-                    return used
-            continue
-        if "ovh" not in _dead:
+        if _avail("ovh"):
             used = ovh_image(prompt, dest)
             if used:
                 return used
-        if "horde" not in _dead:
+        if GEMINI_KEY and _avail("gemini"):
+            used = gemini_image(prompt, dest)
+            if used:
+                return used
+        if person:
+            continue      # people only come from the better generators: Cloudflare, OVH, Gemini
+        if HF_TOKEN and _avail("hf"):
+            used = hf_image(prompt, dest)
+            if used:
+                return used
+        if _avail("horde"):
             used = horde_image(prompt, dest)
             if used:
                 return used
@@ -554,19 +634,32 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
         import stickman
         return stickman.build(script, title, words, length, work, w, h, fps)
     note(f"keys present: cloudflare={bool(CF_ACCOUNT and CF_TOKEN)} hf={bool(HF_TOKEN)} gemini={bool(GEMINI_KEY)}")
-    _BUDGET_END[0] = time.time() + 34 * 60
+    _BUDGET_END[0] = time.time() + 40 * 60
     scenes = plan_scenes(script, words, length)
     note(f"AI scenes planned: {len(scenes)}")
     prompts = write_prompts(scenes, title)
     # a person is drawn only when that scene's own narration is about a person or role; otherwise force a no-people picture
     prompts = [no_people_prompt(f"{title}. {sc['text']}") if (has_person(pr) and not has_person(sc['text'])) else pr
                for sc, pr in zip(scenes, prompts)]
-    segs, ok = [], 0
-    last_img = None
-    redo_left = [max(8, int(len(scenes) * 1.3))]   # cap on regenerations per video
+    n = len(scenes)
+
+    def first_pass(i):
+        try:
+            return gen_image(prompts[i], scenes[i]["text"], Path(work) / f"ai_{i}.img")
+        except Exception as exc:
+            note(f"Scene {i + 1}: image error {exc}")
+            return None
+
+    # first pass: draw every scene's picture in parallel (each provider throttles itself)
+    with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+        first = list(pool.map(first_pass, range(n)))
+    imgs, srcs = [None] * n, [None] * n
+    redo_left = [max(8, int(n * 1.3))]   # cap on regenerations per video
     for i, (sc, pr) in enumerate(zip(scenes, prompts)):
         img = Path(work) / f"ai_{i}.img"
-        src = gen_image(pr, sc["text"], img)
+        src = first[i]
+        if not src:
+            continue
         tries = 0
         flagged = False
         while src and tries < (3 if has_person(pr) else 2) and redo_left[0] > 0 and time.time() < _BUDGET_END[0]:
@@ -597,27 +690,52 @@ def build_ai_segments(script, title, words, length, work, w, h, fps):
                 src3 = make_image(safe, img3)
                 if src3:
                     img, src = img3, src3
+        imgs[i], srcs[i] = img, src
+
+    # rescue: scenes with no picture get more rounds, waiting out any short pause of a provider
+    missing = [i for i in range(n) if imgs[i] is None]
+    if missing:
+        _BUDGET_END[0] = time.time() + 10 * 60
+    rounds = 0
+    while missing and rounds < 3 and time.time() < _BUDGET_END[0]:
+        rounds += 1
+        note(f"Rescuing {len(missing)} scene(s) without a picture (round {rounds})")
+        _wait_until_available()
+        for i in missing:
+            img = Path(work) / f"ai_{i}_rescue.img"
+            pr = prompts[i]
+            if has_person(pr):
+                pr = no_people_prompt(f"{title}. {scenes[i]['text']}")
+            src = make_image(pr, img)
+            if src:
+                imgs[i], srcs[i] = img, src
+        missing = [i for i in range(n) if imgs[i] is None]
+
+    ok = sum(1 for p in imgs if p)
+    for i, src in enumerate(srcs):
         if src:
-            ok += 1
-            last_img = img
-            note(f"Scene {i + 1}/{len(scenes)} image via {src}")
-        elif last_img:
-            img = last_img  # reuse previous picture rather than break the timeline
-            note(f"Scene {i + 1}: image failed, reusing previous")
+            note(f"Scene {i + 1}/{n} image via {src}")
+    if ok < max(2, int(n * 0.6)):
+        note(f"Only {ok}/{n} images generated, falling back to stock footage")
+        return None
+    # fill any last gaps with the nearest neighbouring picture rather than break the timeline
+    last = next(p for p in imgs if p)
+    for i in range(n):
+        if imgs[i] is None:
+            imgs[i] = last
+            note(f"Scene {i + 1}: image failed, reusing neighbour")
         else:
-            note(f"Scene {i + 1}: image failed")
-            return None
+            last = imgs[i]
+    segs = []
+    for i, sc in enumerate(scenes):
         seg = Path(work) / f"aiseg_{i}.mp4"
         span = sc["t1"] - sc["t0"]
         try:
-            animate(img, span + (OVERLAP if i < len(scenes) - 1 else 0), seg, i, w, h, fps)
+            animate(imgs[i], span + (OVERLAP if i < n - 1 else 0), seg, i, w, h, fps)
         except subprocess.CalledProcessError as exc:
             note(f"Animate failed scene {i + 1}: {exc}")
             return None
         segs.append(seg)
-    if ok < max(2, int(len(scenes) * 0.6)):
-        note(f"Only {ok}/{len(scenes)} images generated, falling back to stock footage")
-        return None
     spans = [sc["t1"] - sc["t0"] for sc in scenes]
     joined = Path(work) / "ai_joined.mp4"
     try:
